@@ -1,8 +1,11 @@
-import * as THREE from 'three/webgpu'
-import { SkyMesh } from 'three/addons/objects/SkyMesh.js'
+import * as THREE from 'three'
+import { Sky } from 'three/addons/objects/Sky.js'
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
-import { pass } from 'three/tsl'
-import { bloom } from 'three/addons/tsl/display/BloomNode.js'
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js'
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
 import type { MapData, Box } from './map'
 import { groundHeight } from './map'
 import type { PlayerState, NaniteCache, JumpPad, Portal } from '../net/types'
@@ -877,10 +880,37 @@ function createSoftCloudTexture(): THREE.CanvasTexture {
   return texture
 }
 
+/**
+ * Shared transient-FX assets (projectiles, impact sparks, pad shards).
+ * These fire up to ~10x/sec per shooter, so geometries/materials are
+ * module singletons (or color-cached) instead of per-shot allocations.
+ * Nothing here is ever disposed — removal is just scene.remove().
+ */
+const fxProjectileCoreGeo = new THREE.CylinderGeometry(0.035, 0.035, 0.7, 8)
+const fxProjectileAuraGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.85, 8)
+const fxProjectileCoreMat = new THREE.MeshBasicMaterial({ color: 0xffffff })
+const fxSparkGeo = new THREE.SphereGeometry(0.035, 4, 4)
+const fxShardGeo = new THREE.BoxGeometry(0.06, 0.28, 0.06)
+const fxAdditiveMatCache = new Map<number, THREE.MeshBasicMaterial>()
+function fxAdditiveMat(color: number, opacity: number): THREE.MeshBasicMaterial {
+  const key = (color * 1000 + Math.round(opacity * 100)) >>> 0
+  let m = fxAdditiveMatCache.get(key)
+  if (!m) {
+    m = new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity,
+      blending: THREE.AdditiveBlending
+    })
+    fxAdditiveMatCache.set(key, m)
+  }
+  return m
+}
+
 export class SceneRenderer {
   public scene: THREE.Scene
   public camera: THREE.PerspectiveCamera
-  public renderer: THREE.WebGPURenderer
+  public renderer: THREE.WebGLRenderer
   private playerMeshes = new Map<number, THREE.Group>()
   private clouds: THREE.Sprite[] = []
   private cloudTexture?: THREE.CanvasTexture
@@ -918,7 +948,7 @@ export class SceneRenderer {
   private fpShieldTarget = 0
   private fpShieldFlash = 0
   private shieldTime = 0
-  private projectiles: { mesh: THREE.Group; vel: THREE.Vector3; dist: number; maxDist: number }[] = []
+  private projectiles: { mesh: THREE.Group; vel: THREE.Vector3; dist: number; maxDist: number; speed: number }[] = []
   private sparks: { mesh: THREE.Mesh; vel: THREE.Vector3; life: number }[] = []
   private naniteCacheMeshes = new Map<number, {
     group: THREE.Group
@@ -957,8 +987,9 @@ export class SceneRenderer {
     matB: THREE.MeshBasicMaterial
     phase: number
   }>()
-  private postProcessing!: THREE.PostProcessing
-  private bloomNode!: any
+  private composer!: EffectComposer
+  private gtaoPass!: GTAOPass
+  private bloomPass!: UnrealBloomPass
   private viewmodelFill!: THREE.PointLight
 
   constructor(canvas: HTMLCanvasElement) {
@@ -967,19 +998,18 @@ export class SceneRenderer {
     this.scene.fog = new THREE.FogExp2(0x7ab0d0, 0.00055)
 
     this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.05, 1800)
-    // WebGPU primary, WebGL2 fallback (WebGPURenderer handles this
-    // automatically — Brave/Chrome get WebGPU, others fall back).
-    this.renderer = new THREE.WebGPURenderer({
+    this.renderer = new THREE.WebGLRenderer({
       canvas,
       antialias: true,
       powerPreference: 'high-performance'
-    } as any)
+    })
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5))
     this.renderer.setSize(window.innerWidth, window.innerHeight)
     this.renderer.shadowMap.enabled = true
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
     this.renderer.toneMappingExposure = 0.95
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace
 
     // Image-based lighting: neutral studio env for PBR reflections on
     // metals/armor. Kept subtle so the daylight art direction stays intact.
@@ -988,18 +1018,40 @@ export class SceneRenderer {
     this.scene.environmentIntensity = 0.35
     pmrem.dispose()
 
-    // WebGPU node post stack: scene pass -> TSL bloom -> output.
-    // (GTAO pass dropped: the WebGL GTAOPass has no drop-in WebGPU
-    // equivalent — TSL GTAONode needs an MRT normal/depth chain. Shadows
-    // + hemisphere fill carry contact darkening for now.)
-    this.postProcessing = new THREE.PostProcessing(this.renderer)
-    const scenePass = pass(this.scene, this.camera)
-    const scenePassColor = scenePass.getTextureNode('output')
-    this.bloomNode = bloom(scenePassColor)
-    this.bloomNode.threshold.value = 1.0
-    this.bloomNode.strength.value = 0.32
-    this.bloomNode.radius.value = 0.52
-    this.postProcessing.outputNode = scenePassColor.add(this.bloomNode)
+    // Post stack: HDR render -> GTAO contact darkening -> subtle bloom
+    // (emissives only) -> tonemap/sRGB. MSAA target keeps edges crisp
+    // since the canvas AA is bypassed.
+    const size = new THREE.Vector2(window.innerWidth, window.innerHeight)
+    const msaaTarget = new THREE.WebGLRenderTarget(size.x, size.y, {
+      type: THREE.HalfFloatType,
+      samples: 4
+    })
+    this.composer = new EffectComposer(this.renderer, msaaTarget)
+    this.composer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5))
+    this.composer.setSize(size.x, size.y)
+    this.composer.addPass(new RenderPass(this.scene, this.camera))
+
+    // Screen-space ground truth occlusion adds the contact darkening that a
+    // single directional shadow map cannot resolve under cover and between
+    // small props. Keep it world-scaled and denoised to avoid halo artifacts.
+    this.gtaoPass = new GTAOPass(this.scene, this.camera, size.x, size.y)
+    this.gtaoPass.updateGtaoMaterial({
+      radius: 0.72,
+      distanceExponent: 1,
+      thickness: 1,
+      scale: 1,
+      samples: 16,
+      screenSpaceRadius: false
+    })
+    this.gtaoPass.updatePdMaterial({ samples: 16 })
+    this.gtaoPass.output = GTAOPass.OUTPUT.Default
+    this.gtaoPass.blendIntensity = 0.72
+    this.gtaoPass.pdSamples = 16
+    this.composer.addPass(this.gtaoPass)
+
+    this.bloomPass = new UnrealBloomPass(size, 0.32, 0.52, 1.05)
+    this.composer.addPass(this.bloomPass)
+    this.composer.addPass(new OutputPass())
 
     this.setupSky()
     this.setupLighting()
@@ -1022,6 +1074,7 @@ export class SceneRenderer {
     this.camera.aspect = window.innerWidth / window.innerHeight
     this.camera.updateProjectionMatrix()
     this.renderer.setSize(window.innerWidth, window.innerHeight)
+    this.composer.setSize(window.innerWidth, window.innerHeight)
   }
 
   private setupRobotArm() {
@@ -1335,19 +1388,20 @@ export class SceneRenderer {
   }
 
   private setupSky() {
-    // Procedural sky (Preetham atmospheric model, TSL node version for WebGPU)
-    const sky = new SkyMesh()
+    // Procedural sky (Preetham atmospheric model)
+    const sky = new Sky()
     sky.scale.setScalar(10000)
     this.scene.add(sky)
 
-    sky.turbidity.value = 2.5
-    sky.rayleigh.value = 0.7
-    sky.mieCoefficient.value = 0.002
-    sky.mieDirectionalG.value = 0.65
+    const skyU = sky.material.uniforms as any
+    skyU['turbidity'].value = 2.5
+    skyU['rayleigh'].value = 0.7
+    skyU['mieCoefficient'].value = 0.002
+    skyU['mieDirectionalG'].value = 0.65
 
     // Sun direction aligned with primary sun directional light (late-afternoon angle)
     const sunPos = new THREE.Vector3(170, 95, 55).normalize()
-    sky.sunPosition.value.copy(sunPos)
+    skyU['sunPosition'].value.copy(sunPos)
   }
 
   private setupLighting() {
@@ -2552,22 +2606,13 @@ export class SceneRenderer {
 
     const color = superActive ? 0xffaa00 : 0x00f0ff
 
-    // Inner bright beam core
-    const coreGeo = new THREE.CylinderGeometry(0.035, 0.035, 0.7, 8)
-    const coreMat = new THREE.MeshBasicMaterial({ color: 0xffffff })
-    const coreMesh = new THREE.Mesh(coreGeo, coreMat)
+    // Inner bright beam core (shared geo/mat — never disposed)
+    const coreMesh = new THREE.Mesh(fxProjectileCoreGeo, fxProjectileCoreMat)
     coreMesh.rotation.x = Math.PI / 2
     group.add(coreMesh)
 
-    // Outer glowing energy sheath
-    const auraGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.85, 8)
-    const auraMat = new THREE.MeshBasicMaterial({
-      color,
-      transparent: true,
-      opacity: 0.85,
-      blending: THREE.AdditiveBlending
-    })
-    const auraMesh = new THREE.Mesh(auraGeo, auraMat)
+    // Outer glowing energy sheath (shared geo, color-cached mat)
+    const auraMesh = new THREE.Mesh(fxProjectileAuraGeo, fxAdditiveMat(color, 0.85))
     auraMesh.rotation.x = Math.PI / 2
     group.add(auraMesh)
 
@@ -2582,21 +2627,16 @@ export class SceneRenderer {
       mesh: group,
       vel: dir.clone().multiplyScalar(speed),
       dist: 0,
-      maxDist
+      maxDist,
+      speed
     })
   }
 
   spawnImpactSparks(pos: THREE.Vector3, color: number = 0x00f0ff) {
     const count = 6
-    const sparkGeo = new THREE.SphereGeometry(0.035, 4, 4)
-    const sparkMat = new THREE.MeshBasicMaterial({
-      color,
-      transparent: true,
-      opacity: 0.9,
-      blending: THREE.AdditiveBlending
-    })
+    const sparkMat = fxAdditiveMat(color, 0.9)
     for (let i = 0; i < count; i++) {
-      const mesh = new THREE.Mesh(sparkGeo, sparkMat)
+      const mesh = new THREE.Mesh(fxSparkGeo, sparkMat)
       mesh.position.copy(pos)
       const vel = new THREE.Vector3(
         (Math.random() - 0.5) * 6,
@@ -2903,9 +2943,7 @@ export class SceneRenderer {
     for (let i = 0; i < 14; i++) {
       const ang = Math.random() * Math.PI * 2
       const spd = 1.6 + Math.random() * 3.8
-      const geo = new THREE.BoxGeometry(0.06, 0.28, 0.06)
-      const mat = new THREE.MeshBasicMaterial({ color: 0x67e8f9 })
-      const mesh = new THREE.Mesh(geo, mat)
+      const mesh = new THREE.Mesh(fxShardGeo, fxAdditiveMat(0x67e8f9, 1))
       mesh.position.set(x + Math.cos(ang) * 0.45, y + 0.3, z + Math.sin(ang) * 0.45)
       this.scene.add(mesh)
       this.sparks.push({
@@ -3010,9 +3048,8 @@ export class SceneRenderer {
     // Update active projectiles
     for (let i = this.projectiles.length - 1; i >= 0; i--) {
       const p = this.projectiles[i]
-      const step = p.vel.clone().multiplyScalar(dt)
-      p.mesh.position.add(step)
-      p.dist += step.length()
+      p.mesh.position.addScaledVector(p.vel, dt)
+      p.dist += p.speed * dt
       if (p.dist >= p.maxDist) {
         this.spawnImpactSparks(p.mesh.position, superActive ? 0xffaa00 : 0x00f0ff)
         this.scene.remove(p.mesh)
@@ -3122,7 +3159,7 @@ export class SceneRenderer {
       p.matB.opacity = 0.55 * pulse + 0.25
     }
 
-    this.postProcessing.render()
+    this.composer.render()
   }
 
   destroy() {
@@ -3161,7 +3198,9 @@ export class SceneRenderer {
     }
     this.playerMeshes.clear()
     this.camera.remove(this.viewmodelFill)
-    ;(this.postProcessing as any).dispose?.()
+    this.gtaoPass.dispose()
+    this.bloomPass.dispose()
+    this.composer.dispose()
     this.renderer.dispose()
   }
 }
