@@ -214,7 +214,7 @@ const reprintPercent = computed(() => {
       <div class="shield-corner-bracket bracket-tr"></div>
       <div class="shield-corner-bracket bracket-bl"></div>
       <div class="shield-corner-bracket bracket-br"></div>
-      <div class="shield-status-banner">
+      <div class="shield-status-banner" :class="{ expiring: rTimeRemaining < 2.5 }">
         <span class="shield-icon">🛡️</span>
         <span class="shield-title">DEFLECTOR BARRIER ACTIVE</span>
         <span class="shield-time-left">{{ rTimeRemaining.toFixed(1) }}s IMMUNITY</span>
@@ -1173,6 +1173,21 @@ const reprintPercent = computed(() => {
   background: rgba(0, 240, 255, 0.2);
   padding: 2px 8px;
   border-radius: 4px;
+}
+
+/* Barrier about to drop: banner flips amber to match the 3D domes */
+.shield-status-banner.expiring {
+  border-color: #f59e0b;
+  box-shadow: 0 0 25px rgba(245, 158, 11, 0.55), inset 0 0 10px rgba(245, 158, 11, 0.25);
+  animation-duration: 0.4s;
+}
+.shield-status-banner.expiring .shield-title {
+  color: #f59e0b;
+  text-shadow: 0 0 10px rgba(245, 158, 11, 0.6);
+}
+.shield-status-banner.expiring .shield-time-left {
+  color: #fef3c7;
+  background: rgba(245, 158, 11, 0.25);
 }
 
 @keyframes shieldPulse {

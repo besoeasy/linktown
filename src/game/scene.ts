@@ -1255,6 +1255,7 @@ const fxProjectileCoreMat = new THREE.MeshBasicMaterial({ color: 0xffffff })
 const fxSparkGeo = new THREE.SphereGeometry(0.035, 4, 4)
 const fxShardGeo = new THREE.BoxGeometry(0.06, 0.28, 0.06)
 const fxDummy = new THREE.Object3D()
+const fxWarnColor = new THREE.Color(0xf59e0b)
 const fxAdditiveMatCache = new Map<number, THREE.MeshBasicMaterial>()
 function fxAdditiveMat(color: number, opacity: number): THREE.MeshBasicMaterial {
   const key = (color * 1000 + Math.round(opacity * 100)) >>> 0
@@ -1307,6 +1308,7 @@ export class SceneRenderer {
   private firstPersonShield!: THREE.Group
   // Kinetic shield FX state (cosmetic): fade in/out, pulse clock, hit flash
   private fpShieldDomeMat!: THREE.MeshBasicMaterial
+  private fpShieldRimMat!: THREE.MeshBasicMaterial
   private fpShieldRingMat!: THREE.MeshBasicMaterial
   private fpShieldFade = 0
   private fpShieldTarget = 0
@@ -1769,10 +1771,21 @@ export class SceneRenderer {
     fpRing.rotation.z = Math.PI * 0.7
     this.firstPersonShield.add(fpRing)
 
-    // Fresnel kinetic dome (replaces the flat wireframe lattice)
+    // Fresnel kinetic dome: whisper-thin fill + BackSide rim shell so the
+    // shield reads at the screen edges and never clouds the crosshair.
     this.fpShieldDomeMat = makeShieldDomeMaterial(0x38bdf8)
     const fpDome = new THREE.Mesh(new THREE.SphereGeometry(0.48, 32, 24), this.fpShieldDomeMat)
     this.firstPersonShield.add(fpDome)
+    this.fpShieldRimMat = new THREE.MeshBasicMaterial({
+      color: 0x38bdf8,
+      transparent: true,
+      opacity: 0.5,
+      blending: THREE.AdditiveBlending,
+      side: THREE.BackSide,
+      depthWrite: false
+    })
+    const fpRim = new THREE.Mesh(new THREE.SphereGeometry(0.52, 32, 24), this.fpShieldRimMat)
+    this.firstPersonShield.add(fpRim)
 
     this.firstPersonShield.visible = false
     this.camera.add(this.firstPersonShield)
@@ -2728,6 +2741,7 @@ export class SceneRenderer {
         const shieldMesh = group.getObjectByName('shield') as THREE.Mesh
         if (shieldMesh) {
           shieldMesh.visible = p.shieldActive && Date.now() < p.shieldEnd
+          group.userData.shieldEnd = p.shieldEnd
         }
 
         const superMesh = group.getObjectByName('super') as THREE.Mesh
@@ -3247,24 +3261,33 @@ export class SceneRenderer {
     beacon.position.set(0, 2.95, 0)
     group.add(beacon)
 
-    // Kinetic Shield Dome
+    // Kinetic Shield Dome (Apex rules: clear center, bright rim, expiry read)
     const shieldGroup = new THREE.Group()
     shieldGroup.name = 'shield'
     shieldGroup.position.y = 1.1
     shieldGroup.visible = false
 
+    // Faint FrontSide fill — carries the hit-flash, never hides the pilot.
     const innerShieldMat = makeShieldDomeMaterial(0x00f0ff)
+    innerShieldMat.userData.role = 'fill'
     const innerShield = new THREE.Mesh(new THREE.SphereGeometry(1.35, 32, 24), innerShieldMat)
     shieldGroup.add(innerShield)
 
-    const outerShieldMat = new THREE.MeshBasicMaterial({
+    // BackSide rim shell: additive back faces pile up at the silhouette,
+    // faking a fresnel edge without a shader. This is the readable boundary.
+    const rimShieldMat = new THREE.MeshBasicMaterial({
       color: 0x38bdf8,
-      wireframe: true,
       transparent: true,
-      opacity: 0.75
+      opacity: 0.5,
+      blending: THREE.AdditiveBlending,
+      side: THREE.BackSide,
+      depthWrite: false
     })
-    const outerShield = new THREE.Mesh(new THREE.IcosahedronGeometry(1.42, 2), outerShieldMat)
-    shieldGroup.add(outerShield)
+    rimShieldMat.userData.baseColor = new THREE.Color(0x38bdf8)
+    rimShieldMat.userData.flash = 0
+    rimShieldMat.userData.role = 'rim'
+    const rimShield = new THREE.Mesh(new THREE.SphereGeometry(1.45, 32, 24), rimShieldMat)
+    shieldGroup.add(rimShield)
 
     const ringShieldMat = new THREE.MeshBasicMaterial({
       color: 0x67e8f9,
@@ -3807,7 +3830,7 @@ export class SceneRenderer {
     this.spawnImpactSparks(new THREE.Vector3(x, y + 1.2, z), 0xa855f7)
   }
 
-  render(dt: number, isMoving = false, superActive = false, shieldActive = false, crouching = false) {
+  render(dt: number, isMoving = false, superActive = false, shieldActive = false, crouching = false, shieldFrac = 1) {
     for (const c of this.clouds) {
       c.position.x += (c.userData as any).driftX * dt * 4
       c.position.z += (c.userData as any).driftZ * dt * 4
@@ -3883,9 +3906,16 @@ export class SceneRenderer {
     this.firstPersonShield.visible = fpVisible
     if (fpVisible) {
       const pulse = 0.75 + 0.25 * Math.sin(this.shieldTime * 2.2)
+      const expiring = shieldFrac < 0.25
+      const blink = expiring && Math.sin(this.shieldTime * 12) > 0
+      const tint = expiring ? 0xf59e0b : 0x38bdf8
       const base = this.fpShieldDomeMat.userData.baseColor as THREE.Color
-      this.fpShieldDomeMat.color.copy(base).multiplyScalar(0.5 + pulse * 0.7 + this.fpShieldFlash * 1.5)
-      this.fpShieldDomeMat.opacity = Math.min(1, (0.22 + this.fpShieldFlash * 0.4) * this.fpShieldFade + 0.08 * pulse * this.fpShieldFade)
+      this.fpShieldDomeMat.color.copy(base).lerp(fxWarnColor, expiring ? 0.7 : 0).multiplyScalar(0.5 + pulse * 0.7 + this.fpShieldFlash * 1.5)
+      this.fpShieldDomeMat.opacity = Math.min(1, (0.08 + this.fpShieldFlash * 0.5) * this.fpShieldFade + 0.03 * pulse * this.fpShieldFade)
+      this.fpShieldRimMat.color.setHex(tint)
+      this.fpShieldRimMat.opacity = blink
+        ? 0.12
+        : Math.min(1, (0.38 + this.fpShieldFlash * 0.4 + 0.10 * pulse) * this.fpShieldFade * (0.35 + 0.65 * shieldFrac))
       this.fpShieldRingMat.opacity =
         0.45 * this.fpShieldFade * (0.8 + 0.2 * Math.sin(this.shieldTime * 2.2))
       const s = 0.92 + 0.08 * this.fpShieldFade
@@ -3932,19 +3962,35 @@ export class SceneRenderer {
       f.mat.opacity = k * 0.9
     }
 
-    // Animate 3rd person shields: spin, energy pulse, hit-flash decay
+    // Animate 3rd person shields: pulse, hit-flash decay, expiry telegraph.
+    // Full-strength cyan while healthy; last 25% shifts amber and blinks so
+    // enemies can time their push and owners can time their reposition.
     for (const grp of this.playerMeshes.values()) {
       const sh = grp.getObjectByName('shield')
       if (sh && sh.visible) {
         sh.rotation.y += dt * 1.5
+        const frac = Math.max(0, Math.min(1,
+          ((grp.userData.shieldEnd ?? Date.now()) - Date.now()) / CFG.SHIELD_DURATION))
+        const expiring = frac < 0.25
+        const blink = expiring && Math.sin(this.shieldTime * 12) > 0
         sh.traverse(o => {
           const m = (o as THREE.Mesh).material as THREE.MeshBasicMaterial | undefined
           const ud = (m as any)?.userData
           if (m && ud && ud.baseColor !== undefined) {
             ud.flash = Math.max(0, (ud.flash ?? 0) - dt * 3)
             const pulse = 0.75 + 0.25 * Math.sin(this.shieldTime * 2.2)
-            ;(m as THREE.MeshBasicMaterial).color.copy(ud.baseColor as THREE.Color).multiplyScalar(0.5 + pulse * 0.7 + ud.flash * 1.5)
-            ;(m as THREE.MeshBasicMaterial).opacity = Math.min(1, 0.22 + ud.flash * 0.4 + 0.08 * pulse)
+            const base = ud.baseColor as THREE.Color
+            if (expiring) {
+              m.color.copy(base).lerp(fxWarnColor, 0.75).multiplyScalar(0.5 + pulse * 0.7 + ud.flash * 1.5)
+            } else {
+              m.color.copy(base).multiplyScalar(0.5 + pulse * 0.7 + ud.flash * 1.5)
+            }
+            if (ud.role === 'rim') {
+              m.opacity = blink ? 0.15 : Math.min(1, (0.38 + ud.flash * 0.4 + 0.10 * pulse) * (0.35 + 0.65 * frac))
+            } else {
+              // Fill stays whisper-thin; flash is the only time it shows.
+              m.opacity = Math.min(1, 0.08 + ud.flash * 0.5 + 0.03 * pulse)
+            }
           }
         })
       }

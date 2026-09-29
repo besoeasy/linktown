@@ -1313,7 +1313,10 @@ export class GameEngine {
     const isMoving = this.localPlayer.alive && (!!this.keys['w'] || !!this.keys['s'] || !!this.keys['a'] || !!this.keys['d'])
     // Dead shells drop the first-person arm — the chassis is gone.
     this.scene.setViewmodelVisible(this.localPlayer.alive)
-    this.scene.render(dt, isMoving, this.localPlayer.superActive, this.localPlayer.shieldActive, this.localPlayer.crouching)
+    const shieldFrac = this.localPlayer.shieldActive
+      ? Math.max(0, Math.min(1, (this.localPlayer.shieldEnd - Date.now()) / CFG.SHIELD_DURATION))
+      : 1
+    this.scene.render(dt, isMoving, this.localPlayer.superActive, this.localPlayer.shieldActive, this.localPlayer.crouching, shieldFrac)
 
     // Calculate rolling FPS
     this.frameCount++
