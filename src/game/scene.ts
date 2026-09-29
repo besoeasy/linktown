@@ -1297,6 +1297,24 @@ export class SceneRenderer {
   private courtyardShrine?: THREE.Group
   private towerBeaconMesh?: THREE.Mesh
   private boreasPlanet?: THREE.Mesh
+  // Ambient life (visual only, zero gameplay effect): patrol drones,
+  // fountain spray, drifting dust, lamp mains-hum. All recycled in place —
+  // no per-frame allocation.
+  private drones: {
+    group: THREE.Group
+    eyeMat: THREE.MeshBasicMaterial
+    blinkMat: THREE.MeshBasicMaterial
+    phase: number
+    speed: number
+    cx: number
+    cz: number
+    rx: number
+    rz: number
+    h: number
+  }[] = []
+  private spray?: { points: THREE.Points; pos: Float32Array; vel: Float32Array; age: Float32Array; life: Float32Array; count: number }
+  private dust?: { points: THREE.Points; pos: Float32Array; vel: Float32Array; count: number }
+  private lampHeadMat?: THREE.MeshStandardMaterial
   private portalMeshes = new Map<number, {
     group: THREE.Group
     endA: THREE.Group
@@ -2427,6 +2445,124 @@ export class SceneRenderer {
     // No dynamic light: pyramid + rings + heart are emissive, shrine reads
     // lit without a per-frame PointLight cost.
     this.scene.add(this.courtyardShrine)
+
+    this.setupAmbientLife(materials)
+  }
+
+  /**
+   * Ambient life pass: patrol drones, fountain spray, dust motes, lamp hum.
+   * Everything loops forever with phase offsets; nothing allocates per frame.
+   */
+  private setupAmbientLife(materials: Record<string, THREE.Material>) {
+    this.lampHeadMat = materials.lamp_head as THREE.MeshStandardMaterial
+
+    // ── Patrol drones (3): hub ring, outpost circuit, gate avenue run ──
+    const droneBodyMat = new THREE.MeshStandardMaterial({ color: 0x2a3340, roughness: 0.4, metalness: 0.8 })
+    const droneSpecs = [
+      { cx: 0, cz: 0, rx: 30, rz: 22, h: 24, speed: 0.14, phase: 0 },
+      { cx: 0, cz: 0, rx: 68, rz: 52, h: 17, speed: -0.10, phase: 2.1 },
+      { cx: 0, cz: 0, rx: 8, rz: 95, h: 25, speed: 0.12, phase: 4.2 }
+    ]
+    for (const s of droneSpecs) {
+      const group = new THREE.Group()
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.28, 1.2), droneBodyMat)
+      const nose = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.16, 0.3), droneBodyMat)
+      nose.position.set(0, -0.02, -0.7)
+      const eyeMat = new THREE.MeshBasicMaterial({ color: 0x00f0ff })
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 8), eyeMat)
+      eye.position.set(0, -0.05, -0.85)
+      const blinkMat = new THREE.MeshBasicMaterial({ color: 0xff3344 })
+      const blink = new THREE.Mesh(new THREE.SphereGeometry(0.07, 6, 6), blinkMat)
+      blink.position.set(0, 0.2, 0.55)
+      // Rotor blur discs (cheap spinning quads read as motion at distance)
+      const rotorMat = new THREE.MeshBasicMaterial({ color: 0x94a3b8, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false })
+      const rotors: THREE.Mesh[] = []
+      for (const [rx, rz] of [[-0.55, 0.35], [0.55, 0.35], [-0.55, -0.35], [0.55, -0.35]] as const) {
+        const r = new THREE.Mesh(new THREE.CircleGeometry(0.3, 12), rotorMat)
+        r.rotation.x = -Math.PI / 2
+        r.position.set(rx, 0.16, rz)
+        r.userData.isRotor = true
+        group.add(r)
+        rotors.push(r)
+      }
+      group.add(body, nose, eye, blink)
+      group.userData.rotors = rotors
+      this.scene.add(group)
+      this.drones.push({ group, eyeMat, blinkMat, ...s })
+    }
+
+    // ── Fountain spray (plaza fountain at 0, ~3, 17) ──
+    {
+      const count = 130
+      const pos = new Float32Array(count * 3)
+      const vel = new Float32Array(count * 3)
+      const age = new Float32Array(count)
+      const life = new Float32Array(count)
+      const rnd = mulberry32(9182)
+      for (let i = 0; i < count; i++) {
+        age[i] = rnd() * 1.2
+        life[i] = 0.9 + rnd() * 0.5
+        this.resetSprayParticle(pos, vel, i, rnd)
+        // Pre-roll so the plume exists on frame one
+        age[i] = rnd() * life[i]
+      }
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+      const mat = new THREE.PointsMaterial({
+        color: 0x9be8ff,
+        size: 0.22,
+        transparent: true,
+        opacity: 0.8,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        sizeAttenuation: true
+      })
+      const points = new THREE.Points(geo, mat)
+      points.frustumCulled = false
+      this.scene.add(points)
+      this.spray = { points, pos, vel, age, life, count }
+    }
+
+    // ── Dust motes drifting over the central arena ──
+    {
+      const count = 260
+      const pos = new Float32Array(count * 3)
+      const vel = new Float32Array(count * 3)
+      const rnd = mulberry32(4517)
+      for (let i = 0; i < count; i++) {
+        pos[i * 3] = (rnd() - 0.5) * 220
+        pos[i * 3 + 1] = 0.5 + rnd() * 11
+        pos[i * 3 + 2] = (rnd() - 0.5) * 220
+        vel[i * 3] = 0.4 + rnd() * 0.9
+        vel[i * 3 + 1] = (rnd() - 0.5) * 0.15
+        vel[i * 3 + 2] = (rnd() - 0.5) * 0.5
+      }
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+      const mat = new THREE.PointsMaterial({
+        color: 0xd8dee8,
+        size: 0.3,
+        transparent: true,
+        opacity: 0.32,
+        depthWrite: false,
+        sizeAttenuation: true
+      })
+      const points = new THREE.Points(geo, mat)
+      points.frustumCulled = false
+      this.scene.add(points)
+      this.dust = { points, pos, vel, count }
+    }
+  }
+
+  private resetSprayParticle(pos: Float32Array, vel: Float32Array, i: number, rnd: () => number) {
+    pos[i * 3] = (rnd() - 0.5) * 0.8
+    pos[i * 3 + 1] = 3.1
+    pos[i * 3 + 2] = 17 + (rnd() - 0.5) * 0.8
+    const ang = rnd() * Math.PI * 2
+    const radial = 0.4 + rnd() * 1.1
+    vel[i * 3] = Math.cos(ang) * radial
+    vel[i * 3 + 1] = 3.6 + rnd() * 2.6
+    vel[i * 3 + 2] = Math.sin(ang) * radial
   }
 
   updatePlayers(players: PlayerState[], localPlayerId: number) {
@@ -3590,6 +3726,72 @@ export class SceneRenderer {
 
     if (this.boreasPlanet) {
       this.boreasPlanet.rotation.y += dt * 0.008
+    }
+
+    // Ambient life: drones, spray, dust, lamp hum (all visual-only)
+    const lifeT = this.shieldTime
+    for (const d of this.drones) {
+      const t = lifeT * d.speed + d.phase
+      const px = d.cx + Math.cos(t) * d.rx
+      const pz = d.cz + Math.sin(t * 0.85) * d.rz
+      const py = d.h + Math.sin(lifeT * 0.9 + d.phase) * 1.6
+      // Face along the velocity vector
+      const vx = -Math.sin(t) * d.rx * d.speed
+      const vz = Math.cos(t * 0.85) * 0.85 * d.rz * d.speed
+      d.group.position.set(px, py, pz)
+      if (Math.abs(vx) + Math.abs(vz) > 0.0001) {
+        d.group.rotation.y = Math.atan2(vx, vz) + Math.PI
+      }
+      d.group.rotation.z = Math.sin(lifeT * 1.7 + d.phase) * 0.08
+      const rotors = d.group.userData.rotors as THREE.Mesh[]
+      for (const r of rotors) r.rotation.z += dt * 30
+      // Nav strobe: double-blink cadence
+      const blinkPhase = (lifeT * 1.4 + d.phase) % 1
+      const on = blinkPhase < 0.08 || (blinkPhase > 0.18 && blinkPhase < 0.26)
+      d.blinkMat.color.setHex(on ? 0xff3344 : 0x440a0e)
+    }
+
+    if (this.spray) {
+      const { pos, vel, age, life, count } = this.spray
+      const rnd = Math.random
+      for (let i = 0; i < count; i++) {
+        age[i] += dt
+        if (age[i] >= life[i]) {
+          age[i] = 0
+          life[i] = 0.9 + rnd() * 0.5
+          this.resetSprayParticle(pos, vel, i, rnd)
+        } else {
+          vel[i * 3 + 1] -= 7.5 * dt // gravity pulls the plume back down
+          pos[i * 3] += vel[i * 3] * dt
+          pos[i * 3 + 1] += vel[i * 3 + 1] * dt
+          pos[i * 3 + 2] += vel[i * 3 + 2] * dt
+          if (pos[i * 3 + 1] < 1.2) {
+            // Hit the basin water: recycle early so droplets never clip stone
+            age[i] = life[i]
+          }
+        }
+      }
+      this.spray.points.geometry.attributes.position.needsUpdate = true
+    }
+
+    if (this.dust) {
+      const { pos, vel, count } = this.dust
+      for (let i = 0; i < count; i++) {
+        pos[i * 3] += vel[i * 3] * dt
+        pos[i * 3 + 1] += vel[i * 3 + 1] * dt
+        pos[i * 3 + 2] += vel[i * 3 + 2] * dt
+        if (pos[i * 3] > 110) pos[i * 3] = -110
+        if (pos[i * 3 + 1] < 0.3) pos[i * 3 + 1] = 0.3
+        if (pos[i * 3 + 1] > 12) pos[i * 3 + 1] = 12
+        if (pos[i * 3 + 2] > 110) pos[i * 3 + 2] = -110
+        if (pos[i * 3 + 2] < -110) pos[i * 3 + 2] = 110
+      }
+      this.dust.points.geometry.attributes.position.needsUpdate = true
+    }
+
+    if (this.lampHeadMat) {
+      // Subtle mains hum on every streetlamp + gate beacon at once
+      this.lampHeadMat.emissiveIntensity = 2.0 + Math.sin(lifeT * 13) * 0.07 + Math.sin(lifeT * 47) * 0.05
     }
 
     // Animate Nanite Caches (spin & floating bob)
