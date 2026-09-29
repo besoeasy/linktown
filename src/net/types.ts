@@ -152,14 +152,6 @@ export interface KillMsg {
   targetName: string
 }
 
-export interface TeleportedMsg {
-  type: 'teleported'
-  x: number
-  y: number
-  z: number
-  targetName: string
-}
-
 export interface CachePickupMsg {
   type: 'cachePickup'
   cacheId: number
@@ -248,7 +240,6 @@ export type NetMessage =
   | HitMsg
   | HitConfirmMsg
   | KillMsg
-  | TeleportedMsg
   | CachePickupMsg
   | JumpPadLaunchMsg
   | PortalWarpMsg

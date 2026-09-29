@@ -267,7 +267,7 @@ const reprintPercent = computed(() => {
           <span class="telem-label">ROOM</span>
           <span class="telem-val text-cyan">{{ roomCode }} {{ copiedToast ? '✓ COPIED' : '📋' }}</span>
         </div>
-        <div class="telem-chip contact-chip" :class="`threat-${radarThreat}`" title="Nearest pilot within 100m">
+        <div class="telem-chip contact-chip" :class="`threat-${radarThreat}`" title="Nearest moving pilot within 100m (crouched shells stay hidden)">
           <span class="contact-beacon"></span>
           <span class="telem-label">RADAR</span>
           <span class="telem-val">{{ telemetry?.nearestPilot ? `${telemetry.nearestPilot.name} (${telemetry.nearestPilot.distance}m)` : '—' }}</span>

@@ -82,7 +82,7 @@ Loop: spend hull to frag -> drop cache -> winner siphons 100 -> snowball -> vict
 * Walk 9, run 15 always-run, crouch 0. Crouch = trade all mobility for 3x regen.
 * Jump pads: free, 6 active, 28s life, 2.2u radius, 1.2s CD, high launch + extra air steer for 3s.
 * Portals: free, coin-flip to appear if none active, 10s life, 2.5u radius. 1.5s warp CD.
-* Proximity radar only under 100u — info is scarce, positioning matters.
+* Proximity radar only under 100u, crouched shells hidden — info is scarce, positioning matters.
 
 ## 8. What to Watch When Porting / Tuning
 

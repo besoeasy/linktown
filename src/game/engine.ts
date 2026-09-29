@@ -1308,10 +1308,12 @@ export class GameEngine {
 
     // Proximity tactical tracker: nearest active pilot within 100m only —
     // anything further stays hidden so the radar never gives away positions.
+    // Crouched shells are off the radar: holding still behind cover to
+    // rebuild Hull must not broadcast your presence.
     let nearestPilot: { name: string; distance: number; character: CoreId } | undefined = undefined
     let minD = 100
     for (const p of this.players.values()) {
-      if (p.id !== this.localPlayer.id && p.alive && !p.invisible) {
+      if (p.id !== this.localPlayer.id && p.alive && !p.invisible && !p.crouching) {
         const d = Math.hypot(p.x - this.localPlayer.x, p.z - this.localPlayer.z)
         if (d <= minD) {
           minD = d
