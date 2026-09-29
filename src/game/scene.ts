@@ -1,11 +1,8 @@
-import * as THREE from 'three'
-import { Sky } from 'three/addons/objects/Sky.js'
+import * as THREE from 'three/webgpu'
+import { SkyMesh } from 'three/addons/objects/SkyMesh.js'
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
-import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
-import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
-import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js'
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
+import { pass } from 'three/tsl'
+import { bloom } from 'three/addons/tsl/display/BloomNode.js'
 import type { MapData, Box } from './map'
 import { groundHeight } from './map'
 import type { PlayerState, NaniteCache, JumpPad, Portal } from '../net/types'
@@ -13,56 +10,26 @@ import { CFG, CORE_DETAILS } from './config'
 import { sound } from './audio'
 
 /**
- * Fresnel kinetic-shield dome (cosmetic). View-dependent rim glow with a
- * slow energy pulse, subtle vertex wobble, and a hit-flash channel.
- * Driven per-frame via uniforms uTime / uFlash / uOpacity.
+ * Fresnel-style kinetic-shield dome (cosmetic, WebGPU-compatible).
+ * Previously a custom GLSL ShaderMaterial (fresnel + bands + pulse);
+ * WebGPURenderer uses TSL/node materials, so raw GLSL with
+ * tonemapping/colorspace includes no longer compiles. This keeps the
+ * same visual read (additive cyan dome + hit flash + fade) with a plain
+ * MeshBasicMaterial whose opacity/color is driven per-frame in render().
+ * Flash state lives in material.userData.flash (0..1).
  */
-function makeShieldDomeMaterial(hex: number): THREE.ShaderMaterial {
-  return new THREE.ShaderMaterial({
+function makeShieldDomeMaterial(hex: number): THREE.MeshBasicMaterial {
+  const mat = new THREE.MeshBasicMaterial({
+    color: hex,
     transparent: true,
-    depthWrite: false,
+    opacity: 0.28,
     blending: THREE.AdditiveBlending,
     side: THREE.DoubleSide,
-    uniforms: {
-      uColor: { value: new THREE.Color(hex) },
-      uTime: { value: 0 },
-      uFlash: { value: 0 },
-      uOpacity: { value: 1 }
-    },
-    vertexShader: `
-      varying vec3 vNormal;
-      varying vec3 vView;
-      varying vec3 vPos;
-      uniform float uTime;
-      void main() {
-        vPos = position;
-        vec3 p = position + normal * (sin(uTime * 3.0 + position.y * 4.0 + position.x * 3.0) * 0.02);
-        vec4 mv = modelViewMatrix * vec4(p, 1.0);
-        vNormal = normalize(normalMatrix * normal);
-        vView = normalize(-mv.xyz);
-        gl_Position = projectionMatrix * mv;
-      }
-    `,
-    fragmentShader: `
-      varying vec3 vNormal;
-      varying vec3 vView;
-      varying vec3 vPos;
-      uniform vec3 uColor;
-      uniform float uTime;
-      uniform float uFlash;
-      uniform float uOpacity;
-      void main() {
-        float fres = pow(1.0 - abs(dot(normalize(vNormal), normalize(vView))), 2.0);
-        float bands = 0.5 + 0.5 * sin(vPos.y * 14.0 - uTime * 4.0);
-        float pulse = 0.75 + 0.25 * sin(uTime * 2.2);
-        vec3 col = uColor * (0.25 + fres * 1.6 * pulse + bands * 0.12 + uFlash * 1.5);
-        float alpha = (0.06 + fres * 0.55 + bands * 0.05 + uFlash * 0.4) * uOpacity;
-        gl_FragColor = vec4(col, alpha);
-        #include <tonemapping_fragment>
-        #include <colorspace_fragment>
-      }
-    `
+    depthWrite: false
   })
+  mat.userData.baseColor = new THREE.Color(hex)
+  mat.userData.flash = 0
+  return mat
 }
 
 function createNameplateTexture(name: string, isBot = false): THREE.CanvasTexture {
@@ -913,7 +880,7 @@ function createSoftCloudTexture(): THREE.CanvasTexture {
 export class SceneRenderer {
   public scene: THREE.Scene
   public camera: THREE.PerspectiveCamera
-  public renderer: THREE.WebGLRenderer
+  public renderer: THREE.WebGPURenderer
   private playerMeshes = new Map<number, THREE.Group>()
   private clouds: THREE.Sprite[] = []
   private cloudTexture?: THREE.CanvasTexture
@@ -945,7 +912,7 @@ export class SceneRenderer {
   private readonly morphDim = new THREE.Color(0x1e4a52)
   private firstPersonShield!: THREE.Group
   // Kinetic shield FX state (cosmetic): fade in/out, pulse clock, hit flash
-  private fpShieldDomeMat!: THREE.ShaderMaterial
+  private fpShieldDomeMat!: THREE.MeshBasicMaterial
   private fpShieldRingMat!: THREE.MeshBasicMaterial
   private fpShieldFade = 0
   private fpShieldTarget = 0
@@ -990,9 +957,8 @@ export class SceneRenderer {
     matB: THREE.MeshBasicMaterial
     phase: number
   }>()
-  private composer!: EffectComposer
-  private gtaoPass!: GTAOPass
-  private bloomPass!: UnrealBloomPass
+  private postProcessing!: THREE.PostProcessing
+  private bloomNode!: any
   private viewmodelFill!: THREE.PointLight
 
   constructor(canvas: HTMLCanvasElement) {
@@ -1001,18 +967,19 @@ export class SceneRenderer {
     this.scene.fog = new THREE.FogExp2(0x7ab0d0, 0.00055)
 
     this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.05, 1800)
-    this.renderer = new THREE.WebGLRenderer({
+    // WebGPU primary, WebGL2 fallback (WebGPURenderer handles this
+    // automatically — Brave/Chrome get WebGPU, others fall back).
+    this.renderer = new THREE.WebGPURenderer({
       canvas,
       antialias: true,
       powerPreference: 'high-performance'
-    })
+    } as any)
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5))
     this.renderer.setSize(window.innerWidth, window.innerHeight)
     this.renderer.shadowMap.enabled = true
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
     this.renderer.toneMappingExposure = 0.95
-    this.renderer.outputColorSpace = THREE.SRGBColorSpace
 
     // Image-based lighting: neutral studio env for PBR reflections on
     // metals/armor. Kept subtle so the daylight art direction stays intact.
@@ -1021,37 +988,18 @@ export class SceneRenderer {
     this.scene.environmentIntensity = 0.35
     pmrem.dispose()
 
-    // Post stack: HDR render -> subtle bloom (emissives only) -> tonemap/sRGB.
-    // MSAA target keeps edges crisp since the canvas AA is bypassed.
-    const size = new THREE.Vector2(window.innerWidth, window.innerHeight)
-    const msaaTarget = new THREE.WebGLRenderTarget(size.x, size.y, {
-      type: THREE.HalfFloatType,
-      samples: 4
-    })
-    this.composer = new EffectComposer(this.renderer, msaaTarget)
-    this.composer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5))
-    this.composer.setSize(size.x, size.y)
-    this.composer.addPass(new RenderPass(this.scene, this.camera))
-
-    // Screen-space ground truth occlusion adds the contact darkening that a
-    // single directional shadow map cannot resolve under cover and between
-    // small props. Keep it world-scaled and denoised to avoid halo artifacts.
-    this.gtaoPass = new GTAOPass(this.scene, this.camera, size.x, size.y, {
-      radius: 0.72,
-      distanceExponent: 1,
-      thickness: 1,
-      scale: 1,
-      samples: 16,
-      screenSpaceRadius: false
-    })
-    this.gtaoPass.output = GTAOPass.OUTPUT.Default
-    this.gtaoPass.blendIntensity = 0.72
-    this.gtaoPass.pdSamples = 16
-    this.composer.addPass(this.gtaoPass)
-
-    this.bloomPass = new UnrealBloomPass(size, 0.32, 0.52, 1.05)
-    this.composer.addPass(this.bloomPass)
-    this.composer.addPass(new OutputPass())
+    // WebGPU node post stack: scene pass -> TSL bloom -> output.
+    // (GTAO pass dropped: the WebGL GTAOPass has no drop-in WebGPU
+    // equivalent — TSL GTAONode needs an MRT normal/depth chain. Shadows
+    // + hemisphere fill carry contact darkening for now.)
+    this.postProcessing = new THREE.PostProcessing(this.renderer)
+    const scenePass = pass(this.scene, this.camera)
+    const scenePassColor = scenePass.getTextureNode('output')
+    this.bloomNode = bloom(scenePassColor)
+    this.bloomNode.threshold.value = 1.0
+    this.bloomNode.strength.value = 0.32
+    this.bloomNode.radius.value = 0.52
+    this.postProcessing.outputNode = scenePassColor.add(this.bloomNode)
 
     this.setupSky()
     this.setupLighting()
@@ -1074,7 +1022,6 @@ export class SceneRenderer {
     this.camera.aspect = window.innerWidth / window.innerHeight
     this.camera.updateProjectionMatrix()
     this.renderer.setSize(window.innerWidth, window.innerHeight)
-    this.composer.setSize(window.innerWidth, window.innerHeight)
   }
 
   private setupRobotArm() {
@@ -1388,20 +1335,19 @@ export class SceneRenderer {
   }
 
   private setupSky() {
-    // Procedural sky (Preetham atmospheric model)
-    const sky = new Sky()
+    // Procedural sky (Preetham atmospheric model, TSL node version for WebGPU)
+    const sky = new SkyMesh()
     sky.scale.setScalar(10000)
     this.scene.add(sky)
 
-    const skyU = sky.material.uniforms as any
-    skyU['turbidity'].value = 2.5
-    skyU['rayleigh'].value = 0.7
-    skyU['mieCoefficient'].value = 0.002
-    skyU['mieDirectionalG'].value = 0.65
+    sky.turbidity.value = 2.5
+    sky.rayleigh.value = 0.7
+    sky.mieCoefficient.value = 0.002
+    sky.mieDirectionalG.value = 0.65
 
     // Sun direction aligned with primary sun directional light (late-afternoon angle)
     const sunPos = new THREE.Vector3(170, 95, 55).normalize()
-    skyU['sunPosition'].value.copy(sunPos)
+    sky.sunPosition.value.copy(sunPos)
   }
 
   private setupLighting() {
@@ -1550,7 +1496,7 @@ export class SceneRenderer {
     // The grayscale field also drives a restrained bump response for close-up relief.
     const groundDetailTex = createTerrainDetailTexture()
     const groundBumpTex = createBumpTexture(groundDetailTex)
-    const maxAnisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy())
+    const maxAnisotropy = Math.min(8, (this.renderer as any).capabilities?.getMaxAnisotropy?.() ?? 4)
     groundDetailTex.anisotropy = maxAnisotropy
     groundBumpTex.anisotropy = maxAnisotropy
     const groundMat = new THREE.MeshStandardMaterial({
@@ -2584,9 +2530,9 @@ export class SceneRenderer {
     const grp = this.playerMeshes.get(id)
     if (!grp) return
     grp.traverse(o => {
-      const m = (o as THREE.Mesh).material as THREE.ShaderMaterial | undefined
-      if (m && (m as any).uniforms && (m as any).uniforms.uFlash) {
-        ;(m as any).uniforms.uFlash.value = 1
+      const m = (o as THREE.Mesh).material as THREE.MeshBasicMaterial | undefined
+      if (m && (m as any).userData && (m as any).userData.baseColor !== undefined) {
+        ;(m as any).userData.flash = 1
       }
     })
   }
@@ -3050,9 +2996,10 @@ export class SceneRenderer {
     const fpVisible = this.fpShieldFade > 0.02
     this.firstPersonShield.visible = fpVisible
     if (fpVisible) {
-      this.fpShieldDomeMat.uniforms.uTime.value = this.shieldTime
-      this.fpShieldDomeMat.uniforms.uFlash.value = this.fpShieldFlash
-      this.fpShieldDomeMat.uniforms.uOpacity.value = this.fpShieldFade
+      const pulse = 0.75 + 0.25 * Math.sin(this.shieldTime * 2.2)
+      const base = this.fpShieldDomeMat.userData.baseColor as THREE.Color
+      this.fpShieldDomeMat.color.copy(base).multiplyScalar(0.5 + pulse * 0.7 + this.fpShieldFlash * 1.5)
+      this.fpShieldDomeMat.opacity = Math.min(1, (0.22 + this.fpShieldFlash * 0.4) * this.fpShieldFade + 0.08 * pulse * this.fpShieldFade)
       this.fpShieldRingMat.opacity =
         0.45 * this.fpShieldFade * (0.8 + 0.2 * Math.sin(this.shieldTime * 2.2))
       const s = 0.92 + 0.08 * this.fpShieldFade
@@ -3090,10 +3037,13 @@ export class SceneRenderer {
       if (sh && sh.visible) {
         sh.rotation.y += dt * 1.5
         sh.traverse(o => {
-          const m = (o as THREE.Mesh).material as THREE.ShaderMaterial | undefined
-          if (m && (m as any).uniforms && (m as any).uniforms.uTime) {
-            ;(m as any).uniforms.uTime.value = this.shieldTime
-            ;(m as any).uniforms.uFlash.value = Math.max(0, (m as any).uniforms.uFlash.value - dt * 3)
+          const m = (o as THREE.Mesh).material as THREE.MeshBasicMaterial | undefined
+          const ud = (m as any)?.userData
+          if (m && ud && ud.baseColor !== undefined) {
+            ud.flash = Math.max(0, (ud.flash ?? 0) - dt * 3)
+            const pulse = 0.75 + 0.25 * Math.sin(this.shieldTime * 2.2)
+            ;(m as THREE.MeshBasicMaterial).color.copy(ud.baseColor as THREE.Color).multiplyScalar(0.5 + pulse * 0.7 + ud.flash * 1.5)
+            ;(m as THREE.MeshBasicMaterial).opacity = Math.min(1, 0.22 + ud.flash * 0.4 + 0.08 * pulse)
           }
         })
       }
@@ -3172,7 +3122,7 @@ export class SceneRenderer {
       p.matB.opacity = 0.55 * pulse + 0.25
     }
 
-    this.composer.render()
+    this.postProcessing.render()
   }
 
   destroy() {
@@ -3211,9 +3161,7 @@ export class SceneRenderer {
     }
     this.playerMeshes.clear()
     this.camera.remove(this.viewmodelFill)
-    this.gtaoPass.dispose()
-    this.bloomPass.dispose()
-    this.composer.dispose()
+    ;(this.postProcessing as any).dispose?.()
     this.renderer.dispose()
   }
 }
