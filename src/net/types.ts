@@ -139,6 +139,15 @@ export interface HitMsg {
   bearing?: number
 }
 
+export interface ChatMsg {
+  type: 'chat'
+  text: string
+  /** Filled authoritatively by the host; absent on the client->host leg. */
+  fromId?: number
+  name?: string
+  at?: number
+}
+
 export interface HitConfirmMsg {
   type: 'hitConfirm'
   amount: number
@@ -242,6 +251,7 @@ export type NetMessage =
   | HitMsg
   | HitConfirmMsg
   | KillMsg
+  | ChatMsg
   | CachePickupMsg
   | JumpPadLaunchMsg
   | PortalWarpMsg

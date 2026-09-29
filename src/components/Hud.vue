@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { CFG, CORE_DETAILS, type CoreId } from '../game/config'
 import { sound } from '../game/audio'
-import type { PlayerState, KillMsg, TelemetryData } from '../net/types'
+import type { PlayerState, KillMsg, TelemetryData, ChatMsg } from '../net/types'
 
 const props = defineProps<{
   player: PlayerState
@@ -17,6 +17,11 @@ const props = defineProps<{
   leaderboard?: { id: number; name: string; score: number; isBot?: boolean }[]
   localPlayerId?: number
   hitDir?: { angle: number; at: number } | null
+  chatMessages?: ChatMsg[]
+}>()
+
+const emit = defineEmits<{
+  (e: 'send-chat', text: string): void
 }>()
 
 const copiedToast = ref(false)
@@ -57,10 +62,50 @@ onMounted(() => {
     timerRaf = requestAnimationFrame(loop)
   }
   timerRaf = requestAnimationFrame(loop)
+  window.addEventListener('keydown', onGlobalKey)
 })
 
 onUnmounted(() => {
   if (timerRaf) cancelAnimationFrame(timerRaf)
+  window.removeEventListener('keydown', onGlobalKey)
+})
+
+// All-chat: Enter opens (and drops pointer lock so keys type), Enter sends,
+// Esc closes. Engine ignores game keys while the input owns the keyboard.
+const chatting = ref(false)
+const chatDraft = ref('')
+const chatInput = ref<HTMLInputElement | null>(null)
+function onGlobalKey(e: KeyboardEvent) {
+  const tag = (e.target as HTMLElement)?.tagName
+  if (tag === 'INPUT') return
+  if (e.key === 'Enter' && !chatting.value) {
+    e.preventDefault()
+    chatting.value = true
+    chatDraft.value = ''
+    document.exitPointerLock?.()
+    nextTick(() => chatInput.value?.focus())
+  }
+}
+function sendChat() {
+  const text = chatDraft.value.trim()
+  if (text) emit('send-chat', text)
+  chatDraft.value = ''
+  chatting.value = false
+}
+function closeChat() {
+  chatDraft.value = ''
+  chatting.value = false
+}
+// Last 5 messages, each visible ~10s with a fade tail
+const visibleChat = computed(() => {
+  const now = currentTime.value
+  return (props.chatMessages || [])
+    .filter(m => now - (m.at ?? now) < 10000)
+    .slice(-5)
+    .map(m => {
+      const age = now - (m.at ?? now)
+      return { ...m, opacity: age < 6000 ? 1 : Math.max(0, 1 - (age - 6000) / 4000) }
+    })
 })
 
 const core = computed(() => CORE_DETAILS[props.player.character] || CORE_DETAILS.denja)
@@ -334,7 +379,28 @@ const reprintPercent = computed(() => {
 
     <!-- Bottom Status Panel -->
     <div class="hud-bottom">
-      <!-- Nanite Census / Hull Bar -->
+      <!-- All-chat feed + input (bottom-left, above the status bar) -->
+      <div class="chat-panel">
+        <div class="chat-feed">
+          <div v-for="(m, i) in visibleChat" :key="`${m.at}-${i}`" class="chat-line" :style="{ opacity: m.opacity }">
+            <span class="chat-name">{{ m.name || '???' }}</span>
+            <span class="chat-text">{{ m.text }}</span>
+          </div>
+        </div>
+        <div v-if="chatting" class="chat-input-row">
+          <span class="chat-prompt">ALL ›</span>
+          <input
+            ref="chatInput"
+            v-model="chatDraft"
+            class="chat-input"
+            maxlength="120"
+            placeholder="type, ENTER to send…"
+            @keydown.enter.prevent="sendChat"
+            @keydown.esc="closeChat"
+          />
+        </div>
+        <div v-else-if="visibleChat.length === 0" class="chat-hint">ENTER — chat</div>
+      </div>      <!-- Nanite Census / Hull Bar -->
       <div class="hull-container">
         <div class="hull-header">
           <span class="hull-title">RX-11 NANITE CENSUS</span>
@@ -858,6 +924,70 @@ const reprintPercent = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+/* All-chat: feed above the status bar, input when typing */
+.chat-panel {
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+}
+.chat-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.chat-line {
+  background: rgba(11, 14, 22, 0.72);
+  border-left: 3px solid #00f0ff;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 13px;
+  width: fit-content;
+  max-width: 100%;
+}
+.chat-name {
+  font-weight: 800;
+  color: #f59e0b;
+  margin-right: 6px;
+}
+.chat-text {
+  color: #e2e8f0;
+  word-break: break-word;
+}
+.chat-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(11, 14, 22, 0.92);
+  border: 1px solid rgba(0, 240, 255, 0.5);
+  border-radius: 6px;
+  padding: 6px 10px;
+  pointer-events: auto;
+}
+.chat-prompt {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: #00f0ff;
+}
+.chat-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #fff;
+  font-size: 14px;
+  font-family: inherit;
+  user-select: text;
+  pointer-events: auto;
+}
+.chat-hint {
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: rgba(255, 255, 255, 0.35);
 }
 
 .hull-container {

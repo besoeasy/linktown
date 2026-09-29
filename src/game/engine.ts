@@ -4,7 +4,7 @@ import { createBoxGrid, resolveCollision, raycastPlayers } from './physics'
 import { spawnBots, tickBots } from './bots'
 import { sound } from './audio'
 import type { SceneRenderer } from './scene'
-import type { PlayerState, NetMessage, KillMsg, HitConfirmMsg, TelemetryData, MatchResults, NaniteCache, CachePickupMsg, JumpPad, JumpPadLaunchMsg, Portal } from '../net/types'
+import type { PlayerState, NetMessage, KillMsg, HitConfirmMsg, TelemetryData, MatchResults, NaniteCache, CachePickupMsg, ChatMsg, JumpPad, JumpPadLaunchMsg, Portal } from '../net/types'
 import { P2PHost, P2PClient } from '../net/webrtc'
 
 export type GameMode = 'solo' | 'host' | 'client'
@@ -20,6 +20,7 @@ export interface GameCallbacks {
   onHitConfirm: (msg: HitConfirmMsg) => void
   onKill: (msg: KillMsg) => void
   onCachePickup?: (amount: number) => void
+  onChat?: (msg: ChatMsg) => void
   onLeaderboardUpdate: (leaderboard: { id: number; name: string; score: number; isBot?: boolean; ping?: number }[]) => void
   onMatchEnd: (results: MatchResults) => void
 }
@@ -126,6 +127,9 @@ export class GameEngine {
   private abilityTimers = new Set<ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>>()
   /** Last accepted shot timestamp per remote peer (host-side fire-rate limit). */
   private remoteShotAt = new Map<number, number>()
+  /** Last accepted chat timestamp per remote peer (host-side spam gate). */
+  private remoteChatAt = new Map<number, number>()
+  private lastChatAt = 0
   private trackTimer(t: ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>) {
     this.abilityTimers.add(t)
     return t
@@ -238,6 +242,7 @@ export class GameEngine {
   onPeerDisconnected(peerId: number) {
     this.players.delete(peerId)
     this.remoteShotAt.delete(peerId)
+    this.remoteChatAt.delete(peerId)
     this.remotePortalCooldown.delete(peerId)
     this.scene.updatePlayers([...this.players.values()], this.localPlayer.id)
   }
@@ -324,6 +329,8 @@ export class GameEngine {
     }
 
     on(window, 'keydown', (e: KeyboardEvent) => {
+      // Chat box owns the keyboard while typing (no WASD runaway, no Q/E/R).
+      if ((e.target as HTMLElement)?.tagName === 'INPUT') return
       this.keys[e.key.toLowerCase()] = true
       if (e.key.toLowerCase() === 'c') {
         this.toggleCrouch()
@@ -744,6 +751,29 @@ export class GameEngine {
         this.host.broadcast(killMsg)
       }
     }
+  }
+
+  /** All-chat: 120 chars, ~1 msg/s. Solo/host display instantly with the
+   *  roster name; clients send up and get their echo in the broadcast. */
+  public sendChat(text: string) {
+    const clean = text.trim().slice(0, 120)
+    if (!clean || !this.isRunning || this.isGameOver) return
+    const now = Date.now()
+    if (now - this.lastChatAt < 800) return
+    this.lastChatAt = now
+    if (this.mode === 'client') {
+      this.client?.send({ type: 'chat', text: clean })
+      return
+    }
+    const msg: ChatMsg = {
+      type: 'chat',
+      text: clean,
+      fromId: this.localPlayer.id,
+      name: this.localPlayer.name,
+      at: now
+    }
+    this.callbacks.onChat?.(msg)
+    if (this.host) this.host.broadcast(msg)
   }
 
   public spawnNaniteCache(x: number, y: number, z: number, amount: number): NaniteCache {
@@ -1476,6 +1506,26 @@ export class GameEngine {
       this.callbacks.onHitConfirm(msg)
     } else if (msg.type === 'kill') {
       this.callbacks.onKill(msg)
+    } else if (msg.type === 'chat' && this.mode !== 'client') {
+      // Host leg: validate, stamp the roster name (no spoofing), rebroadcast.
+      if (!fromId || !this.players.has(fromId)) return
+      const clean = (msg.text || '').trim().slice(0, 120)
+      if (!clean) return
+      const now = Date.now()
+      if (now - (this.remoteChatAt.get(fromId) ?? 0) < 800) return
+      this.remoteChatAt.set(fromId, now)
+      const out: ChatMsg = {
+        type: 'chat',
+        text: clean,
+        fromId,
+        name: this.players.get(fromId)!.name,
+        at: now
+      }
+      this.callbacks.onChat?.(out)
+      if (this.host) this.host.broadcast(out)
+    } else if (msg.type === 'chat') {
+      // Client leg: host broadcast (includes our own echo).
+      this.callbacks.onChat?.(msg)
     } else if (msg.type === 'input' && fromId && this.players.has(fromId)) {
       const p = this.players.get(fromId)!
       p.yaw = msg.yaw

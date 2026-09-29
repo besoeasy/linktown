@@ -4,7 +4,7 @@ import type { CoreId } from './game/config'
 import { STATIC_MAP_SEED } from './game/map'
 import { SceneRenderer } from './game/scene'
 import { GameEngine } from './game/engine'
-import type { PlayerState, KillMsg, HitConfirmMsg, TelemetryData, MatchResults } from './net/types'
+import type { PlayerState, KillMsg, HitConfirmMsg, TelemetryData, MatchResults, ChatMsg } from './net/types'
 import { P2PHost, P2PClient } from './net/webrtc'
 import { generateRoomCode, PeerJSHost, PeerJSClient } from './net/peer'
 import { encodeSignal, decodeSignal } from './net/qr'
@@ -36,6 +36,7 @@ const matchTime = ref(600)
 const leaderboard = ref<{ id: number; name: string; score: number }[]>([])
 const hvtId = ref<number | null>(null)
 const killFeed = ref<KillMsg[]>([])
+const chatMessages = ref<ChatMsg[]>([])
 const hitFlash = ref(false)
 const hitDir = ref<{ angle: number; at: number } | null>(null)
 const hitConfirm = ref({ show: false, amount: 0, killed: false })
@@ -253,6 +254,10 @@ const initEngine = (seed: number, mode: 'solo' | 'host' | 'client') => {
       onCachePickup: (amount: number) => {
         cachePopup.value = { show: true, amount }
         setTimeout(() => { cachePopup.value.show = false }, 1200)
+      },
+      onChat: (msg: ChatMsg) => {
+        chatMessages.value.push(msg)
+        if (chatMessages.value.length > 30) chatMessages.value.shift()
       },
       onLeaderboardUpdate: (lb) => {
         leaderboard.value = lb
@@ -589,6 +594,8 @@ const handleSignalSubmit = (val: string) => {
       :room-code="currentRoomCode"
       :leaderboard="leaderboard"
       :local-player-id="localPlayer.id || 1"
+      :chat-messages="chatMessages"
+      @send-chat="engine?.sendChat($event)"
     />
 
     <!-- Tab / F Scoreboard -->
