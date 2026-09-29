@@ -74,12 +74,28 @@ export function getStaticMap(): MapData {
     box(-x, y, -z, w, h, d, type, biome)
   }
 
-  // ── Perimeter boundary walls ──────────────────────────────
-  const wH = 12, wT = 2
-  box(0, 3, -HALF, SIZE, wH + 6, wT, 'wall', 'neutral')
-  box(0, 3, HALF, SIZE, wH + 6, wT, 'wall', 'neutral')
-  box(-HALF, 3, 0, wT, wH + 6, SIZE, 'wall', 'neutral')
-  box(HALF, 3, 0, wT, wH + 6, SIZE, 'wall', 'neutral')
+  // ── Perimeter containment field ─────────────────────────
+  // Invisible-till-rendered: collision boxes stay tall (28 m so even
+  // jump-pad flights can't clear the arena) while scene.ts draws them as
+  // translucent flowing energy instead of opaque alloy. Emitter pylons and
+  // corner towers sell the source of the field.
+  const wT = 2
+  box(0, 11, -HALF, SIZE, 34, wT, 'shieldwall', 'neutral')
+  box(0, 11, HALF, SIZE, 34, wT, 'shieldwall', 'neutral')
+  box(-HALF, 11, 0, wT, 34, SIZE, 'shieldwall', 'neutral')
+  box(HALF, 11, 0, wT, 34, SIZE, 'shieldwall', 'neutral')
+  for (let c = -120; c <= 120; c += 30) {
+    box(c, 4, -HALF, 1.2, 8, 1.2, 'pillar', 'neutral')
+    box(c, 8.3, -HALF, 0.7, 0.5, 0.7, 'lamp_head', 'neutral')
+    box(c, 4, HALF, 1.2, 8, 1.2, 'pillar', 'neutral')
+    box(c, 8.3, HALF, 0.7, 0.5, 0.7, 'lamp_head', 'neutral')
+    box(-HALF, 4, c, 1.2, 8, 1.2, 'pillar', 'neutral')
+    box(-HALF, 8.3, c, 0.7, 0.5, 0.7, 'lamp_head', 'neutral')
+    box(HALF, 4, c, 1.2, 8, 1.2, 'pillar', 'neutral')
+    box(HALF, 8.3, c, 0.7, 0.5, 0.7, 'lamp_head', 'neutral')
+  }
+  quad(HALF, 5, HALF, 2.5, 10, 2.5, 'pillar', 'neutral')
+  quad(HALF, 10.3, HALF, 0.8, 0.5, 0.8, 'lamp_head', 'neutral')
 
   // ── 5-floor Central Meridian Hub ──────────────────────────
   const FLOORS = 5

@@ -295,6 +295,49 @@ function createGroundRoughness(sizeMeters: number): THREE.CanvasTexture {
   return tex
 }
 
+/** Vertical energy strips + stabilizer bands for the containment field. */
+function createShieldWallTexture(): THREE.CanvasTexture {
+  const W = 256, H = 256
+  const canvas = document.createElement('canvas')
+  canvas.width = W
+  canvas.height = H
+  const ctx = canvas.getContext('2d')!
+
+  ctx.clearRect(0, 0, W, H)
+
+  // Rising energy columns (tile horizontally every 32 px = ~3.75 m on the wall)
+  for (let x = 0; x < W; x += 32) {
+    const g = ctx.createLinearGradient(x, 0, x + 14, 0)
+    g.addColorStop(0, 'rgba(0,240,255,0)')
+    g.addColorStop(0.5, 'rgba(0,240,255,0.85)')
+    g.addColorStop(1, 'rgba(0,240,255,0)')
+    ctx.fillStyle = g
+    ctx.fillRect(x, 0, 14, H)
+    // hot core line
+    ctx.fillStyle = 'rgba(220,255,255,0.9)'
+    ctx.fillRect(x + 6, 0, 2, H)
+  }
+
+  // Stabilizer bands: brighter horizontal rails, faint between-lines
+  for (let y = 0; y < H; y += 64) {
+    ctx.fillStyle = 'rgba(0,240,255,0.5)'
+    ctx.fillRect(0, y, W, 3)
+    ctx.fillStyle = 'rgba(0,240,255,0.16)'
+    ctx.fillRect(0, y + 32, W, 1.5)
+  }
+
+  // Drifting sparks caught in the field
+  for (let i = 0; i < 60; i++) {
+    ctx.fillStyle = `rgba(200,255,255,${0.25 + Math.random() * 0.5})`
+    ctx.fillRect(Math.random() * W, Math.random() * H, 2, 2)
+  }
+
+  const tex = new THREE.CanvasTexture(canvas)
+  tex.wrapS = THREE.RepeatWrapping
+  tex.wrapT = THREE.RepeatWrapping
+  return tex
+}
+
 /** Soft radial blob used for grounding contact shadows under structures. */
 function createContactShadowTexture(): THREE.CanvasTexture {
   const S = 128
@@ -1317,6 +1360,9 @@ export class SceneRenderer {
   private lampHeadMat?: THREE.MeshStandardMaterial
   /** Telepotu relay anchors: one marker group per player, synced in updatePlayers. */
   private anchorMeshes = new Map<number, THREE.Group>()
+  /** Containment-field energy walls: flowing texture scrolled in render(). */
+  private shieldWallTex?: THREE.CanvasTexture
+  private shieldWallMats: THREE.MeshBasicMaterial[] = []
   private portalMeshes = new Map<number, {
     group: THREE.Group
     endA: THREE.Group
@@ -2045,6 +2091,25 @@ export class SceneRenderer {
 
     const materials: Record<string, THREE.Material> = {
       wall: new THREE.MeshStandardMaterial({ map: texDarkAlloy, bumpMap: bumpDarkAlloy, bumpScale: 0.055, roughness: 0.65, metalness: 0.35 }),
+      // Containment field: additive energy lattice, animated in render().
+      // No depth write so sightlines pass through to the horizon.
+      shieldwall: (() => {
+        const tex = createShieldWallTexture()
+        tex.anisotropy = maxAnisotropy
+        this.shieldWallTex = tex
+        const mat = new THREE.MeshBasicMaterial({
+          map: tex,
+          color: 0x66f6ff,
+          transparent: true,
+          opacity: 0.42,
+          blending: THREE.AdditiveBlending,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+          fog: false
+        })
+        this.shieldWallMats.push(mat)
+        return mat
+      })(),
       house_body: new THREE.MeshStandardMaterial({ map: texConcrete, bumpMap: bumpConcrete, bumpScale: 0.045, roughness: 0.72, metalness: 0.08 }),
       house_window: new THREE.MeshStandardMaterial({
         map: texWindows.map,
@@ -2180,6 +2245,7 @@ export class SceneRenderer {
       for (const b of map.boxes) {
         if (b.h < 1 || b.y - b.h / 2 > 0.6) continue // airborne decks/rails
         if (b.type === 'road_marking' || b.type === 'path') continue
+        if (b.type === 'shieldwall') continue // energy field grounds nothing
         footprints.push({ x: b.x, z: b.z, w: b.w, d: b.d })
       }
       const shadowGeo = new THREE.PlaneGeometry(1, 1)
@@ -3774,6 +3840,15 @@ export class SceneRenderer {
       const holoPulse = 0.84 + 0.16 * Math.sin(this.shieldTime * 2.8)
       for (const m of this.holoMaterials) {
         m.opacity = (m.userData.baseOpacity ?? 0.9) * holoPulse
+      }
+    }
+
+    // Containment field: energy flows upward, boundary breathes slowly
+    if (this.shieldWallTex) {
+      this.shieldWallTex.offset.y = (this.shieldWallTex.offset.y - dt * 0.1) % 1
+      const fieldPulse = 0.36 + 0.10 * Math.sin(this.shieldTime * 2.2)
+      for (const m of this.shieldWallMats) {
+        m.opacity = fieldPulse
       }
     }
 
