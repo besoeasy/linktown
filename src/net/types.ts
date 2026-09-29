@@ -135,6 +135,8 @@ export interface CrouchMsg {
 export interface HitMsg {
   type: 'hit'
   amount: number
+  /** Shooter bearing relative to the victim's view (0 = ahead). */
+  bearing?: number
 }
 
 export interface HitConfirmMsg {

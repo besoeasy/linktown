@@ -37,6 +37,7 @@ const leaderboard = ref<{ id: number; name: string; score: number }[]>([])
 const hvtId = ref<number | null>(null)
 const killFeed = ref<KillMsg[]>([])
 const hitFlash = ref(false)
+const hitDir = ref<{ angle: number; at: number } | null>(null)
 const hitConfirm = ref({ show: false, amount: 0, killed: false })
 const cachePopup = ref({ show: false, amount: 0 })
 const showScoreboard = ref(false)
@@ -236,9 +237,10 @@ const initEngine = (seed: number, mode: 'solo' | 'host' | 'client') => {
         hvtId.value = hvt
         if (telem) telemetry.value = telem
       },
-      onHit: () => {
+      onHit: (_amount, bearing) => {
         hitFlash.value = true
         setTimeout(() => { hitFlash.value = false }, 150)
+        if (bearing != null) hitDir.value = { angle: bearing, at: Date.now() }
       },
       onHitConfirm: (msg: HitConfirmMsg) => {
         hitConfirm.value = { show: true, amount: msg.amount, killed: msg.killed }
@@ -579,6 +581,7 @@ const handleSignalSubmit = (val: string) => {
       :match-time="matchTime"
       :kill-feed="killFeed"
       :hit-flash="hitFlash"
+      :hit-dir="hitDir"
       :hit-confirm="hitConfirm"
       :cache-popup="cachePopup"
       :telemetry="telemetry"

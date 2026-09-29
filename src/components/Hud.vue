@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { CFG, CORE_DETAILS, type CoreId } from '../game/config'
+import { sound } from '../game/audio'
 import type { PlayerState, KillMsg, TelemetryData } from '../net/types'
 
 const props = defineProps<{
@@ -15,6 +16,7 @@ const props = defineProps<{
   roomCode?: string
   leaderboard?: { id: number; name: string; score: number; isBot?: boolean }[]
   localPlayerId?: number
+  hitDir?: { angle: number; at: number } | null
 }>()
 
 const copiedToast = ref(false)
@@ -47,6 +49,11 @@ const modeLabel = computed(() => {
 onMounted(() => {
   const loop = () => {
     currentTime.value = Date.now()
+    // Critical-hull heartbeat (re-triggered at most ~1/s while critical)
+    if (lowHull.value && currentTime.value - lastLowBeep > 1100) {
+      lastLowBeep = currentTime.value
+      sound.playLowHull()
+    }
     timerRaf = requestAnimationFrame(loop)
   }
   timerRaf = requestAnimationFrame(loop)
@@ -94,6 +101,19 @@ const myRank = computed(() => {
 const leader = computed(() => (props.leaderboard || [])[0] || null)
 const isLeader = computed(() => !!leader.value && leader.value.id === myId.value)
 const scoreGap = computed(() => (leader.value ? Math.max(0, leader.value.score - props.player.score) : 0))
+
+// Damage direction arc (shooter bearing, visible ~0.9s per hit)
+const damageDirVisible = computed(() =>
+  !!props.hitDir && props.player.alive && currentTime.value - props.hitDir.at < 900
+)
+const damageDirStyle = computed(() => ({
+  // Bearing 0 = ahead; negative bearing = screen right (yaw convention)
+  transform: `rotate(${(-(props.hitDir?.angle ?? 0) * 180) / Math.PI}deg)`
+}))
+
+// Critical Hull: under 25% while alive
+const lowHull = computed(() => props.player.alive && props.player.health < CFG.MAX_HEALTH * 0.25)
+let lastLowBeep = 0
 
 // Final-minute urgency + radar threat heat
 const clockDanger = computed(() => props.matchTime <= 60)
@@ -182,7 +202,8 @@ const reprintPercent = computed(() => {
 </script>
 
 <template>
-  <div class="hud-overlay" :class="{ 'hit-vignette': hitFlash }">
+  <div class="hud-overlay" :class="{ 'hit-vignette': hitFlash, 'low-hull': lowHull }">
+    <!-- Critical Hull banner pulse -->
     <!-- Blueish Kinetic Shield Overlay (when Shield is active) -->
     <div
       v-if="player.shieldActive && rTimeRemaining > 0"
@@ -298,6 +319,10 @@ const reprintPercent = computed(() => {
         <div class="ch-line ch-left"></div>
         <div class="ch-line ch-right"></div>
         <div class="ch-dot"></div>
+      </div>
+      <!-- Damage direction: red arc toward the shooter, ~0.9s per hit -->
+      <div v-if="damageDirVisible" class="damage-dir" :style="damageDirStyle">
+        <div class="damage-arc"></div>
       </div>
       <div v-if="hitConfirm.show" class="damage-popup" :class="{ 'kill-popup': hitConfirm.killed }">
         {{ hitConfirm.killed ? 'FRAG!' : `-${hitConfirm.amount}` }}
@@ -496,6 +521,41 @@ const reprintPercent = computed(() => {
 
 .hit-vignette {
   box-shadow: inset 0 0 100px rgba(239, 68, 68, 0.7);
+}
+
+/* Critical Hull: slow red heartbeat while under 25% */
+.hud-overlay.low-hull {
+  animation: lowHullPulse 1.1s ease-in-out infinite;
+}
+@keyframes lowHullPulse {
+  0%, 100% { box-shadow: inset 0 0 60px rgba(239, 68, 68, 0.25); }
+  50% { box-shadow: inset 0 0 135px rgba(239, 68, 68, 0.6); }
+}
+
+/* Damage direction arc: rotates around the crosshair toward the shooter */
+.damage-dir {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+.damage-arc {
+  position: absolute;
+  left: -45px;
+  top: -108px;
+  width: 90px;
+  height: 26px;
+  border-top: 5px solid rgba(239, 68, 68, 0.95);
+  border-radius: 50%;
+  filter: drop-shadow(0 0 6px rgba(239, 68, 68, 0.8));
+  animation: dirFade 0.9s ease forwards;
+}
+@keyframes dirFade {
+  0% { opacity: 1; }
+  60% { opacity: 1; }
+  100% { opacity: 0; }
 }
 
 .hud-top {

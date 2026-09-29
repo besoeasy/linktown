@@ -16,7 +16,7 @@ export interface GameCallbacks {
     hvtId: number | null,
     telemetry: TelemetryData
   ) => void
-  onHit: (amount: number) => void
+  onHit: (amount: number, bearing?: number) => void
   onHitConfirm: (msg: HitConfirmMsg) => void
   onKill: (msg: KillMsg) => void
   onCachePickup?: (amount: number) => void
@@ -118,6 +118,7 @@ export class GameEngine {
   private vy = 0
   private padBoostUntil = 0
   private lastShotTime = 0
+  private lastDryFire = 0
   private lastHitTime = Date.now()
   private inputDisposers: Array<() => void> = []
   /** Pending setTimeout/setInterval handles for timed abilities so
@@ -577,7 +578,14 @@ export class GameEngine {
     if (!this.localPlayer.alive || this.localPlayer.invisible) return
     const now = Date.now()
     if (now - this.lastShotTime < CFG.FIRE_INTERVAL_MS) return
-    if (this.localPlayer.health <= CFG.SHOT_COST_SINGLE) return
+    if (this.localPlayer.health <= CFG.SHOT_COST_SINGLE) {
+      // Dry-fire feedback (throttled): the trigger does nothing silently otherwise.
+      if (now - this.lastDryFire > 250) {
+        this.lastDryFire = now
+        sound.playDryFire()
+      }
+      return
+    }
 
     this.lastShotTime = now
     this.localPlayer.health -= CFG.SHOT_COST_SINGLE
@@ -662,6 +670,13 @@ export class GameEngine {
     }
 
     const shooter = this.players.get(shooterId)
+    // Shooter bearing relative to the victim's view (0 = dead ahead).
+    // Suicides and unknown shooters carry no direction.
+    let bearing: number | undefined
+    if (shooter && shooter.id !== target.id) {
+      bearing = Math.atan2(-(shooter.x - target.x), -(shooter.z - target.z)) - target.yaw
+      bearing = Math.atan2(Math.sin(bearing), Math.cos(bearing))
+    }
     const hitConfirm = {
       type: 'hitConfirm' as const,
       amount: Math.round(dmg),
@@ -670,10 +685,10 @@ export class GameEngine {
     }
     if (target.id === this.localPlayer.id) {
       sound.playHit()
-      this.callbacks.onHit(Math.round(dmg))
+      this.callbacks.onHit(Math.round(dmg), bearing)
     } else if (this.host) {
-      // Remote victim gets their red flash + damage number
-      this.host.sendTo(target.id, { type: 'hit', amount: Math.round(dmg) })
+      // Remote victim gets their red flash + damage number + direction arc
+      this.host.sendTo(target.id, { type: 'hit', amount: Math.round(dmg), bearing })
     }
     if (shooter && shooter.id === this.localPlayer.id) {
       sound.playHitConfirm(target.health <= 0)
@@ -1439,7 +1454,7 @@ export class GameEngine {
       const now = Date.now()
       this.lastHitTime = now
       this.localPlayer.lastDamageAt = now
-      this.callbacks.onHit(msg.amount)
+      this.callbacks.onHit(msg.amount, msg.bearing)
     } else if (msg.type === 'hitConfirm') {
       sound.playHitConfirm(msg.killed)
       this.callbacks.onHitConfirm(msg)
