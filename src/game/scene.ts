@@ -1346,14 +1346,14 @@ export class SceneRenderer {
     this.renderer.shadowMap.enabled = true
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    this.renderer.toneMappingExposure = 0.95
+    this.renderer.toneMappingExposure = 1.05
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
 
     // Image-based lighting: neutral studio env for PBR reflections on
     // metals/armor. Kept subtle so the daylight art direction stays intact.
     const pmrem = new THREE.PMREMGenerator(this.renderer)
     this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture
-    this.scene.environmentIntensity = 0.35
+    this.scene.environmentIntensity = 0.55
     pmrem.dispose()
 
     // Post stack: HDR render -> GTAO contact darkening -> subtle bloom
@@ -1743,13 +1743,14 @@ export class SceneRenderer {
   }
 
   private setupLighting() {
-    // Natural hemisphere ratio: cool sky light with a restrained warm ground bounce.
-    const hemi = new THREE.HemisphereLight(0xdcecff, 0x566044, 0.58)
+    // Apex-style bright daylight: high ambient fill so shadows stay readable
+    // and everything is lit up. One soft sun for direction + grounding.
+    const hemi = new THREE.HemisphereLight(0xdcecff, 0x6a7258, 0.95)
     this.scene.add(hemi)
 
     // One dominant warm sun preserves readable form and long directional shadows.
     // The orthographic frustum fits the full 300m arena with a small margin.
-    const sun = new THREE.DirectionalLight(0xffe8bd, 3.1)
+    const sun = new THREE.DirectionalLight(0xfff0d0, 2.6)
     sun.position.set(170, 95, 55)
     sun.target.position.set(0, 0, 0)
     sun.castShadow = true
@@ -1765,13 +1766,13 @@ export class SceneRenderer {
     sun.shadow.radius = 1.5
     this.scene.add(sun, sun.target)
 
-    // Very light opposing fill approximates atmospheric skylight, not a studio key.
-    const fill = new THREE.DirectionalLight(0x9fbddd, 0.24)
+    // Generous opposing fill keeps shaded faces lit — no crushed blacks.
+    const fill = new THREE.DirectionalLight(0xbdd2e8, 0.4)
     fill.position.set(-100, 80, -80)
     this.scene.add(fill)
 
-    // Keep deep shade readable while allowing GTAO to supply the form definition.
-    const ambient = new THREE.AmbientLight(0xb9c9d8, 0.1)
+    // Base ambient lift so deep shade never goes murky.
+    const ambient = new THREE.AmbientLight(0xc4d2e0, 0.3)
     this.scene.add(ambient)
   }
 
