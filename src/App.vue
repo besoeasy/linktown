@@ -584,6 +584,8 @@ const handleSignalSubmit = (val: string) => {
       :telemetry="telemetry"
       :p2p-status="p2pStatus"
       :room-code="currentRoomCode"
+      :leaderboard="leaderboard"
+      :local-player-id="localPlayer.id || 1"
     />
 
     <!-- Tab / F Scoreboard -->

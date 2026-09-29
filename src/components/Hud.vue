@@ -13,6 +13,8 @@ const props = defineProps<{
   telemetry?: TelemetryData
   p2pStatus?: string
   roomCode?: string
+  leaderboard?: { id: number; name: string; score: number; isBot?: boolean }[]
+  localPlayerId?: number
 }>()
 
 const copiedToast = ref(false)
@@ -82,6 +84,26 @@ const qPercent = computed(() => {
 })
 
 const abilityReady = computed(() => !props.player.superActive && qTimeRemaining.value <= 0)
+
+// Objective readout (leaderboard is the top-5 slice)
+const myId = computed(() => props.localPlayerId ?? props.player.id)
+const myRank = computed(() => {
+  const i = (props.leaderboard || []).findIndex(e => e.id === myId.value)
+  return i >= 0 ? i + 1 : null // null = outside the top 5
+})
+const leader = computed(() => (props.leaderboard || [])[0] || null)
+const isLeader = computed(() => !!leader.value && leader.value.id === myId.value)
+const scoreGap = computed(() => (leader.value ? Math.max(0, leader.value.score - props.player.score) : 0))
+
+// Final-minute urgency + radar threat heat
+const clockDanger = computed(() => props.matchTime <= 60)
+const radarThreat = computed(() => {
+  const d = props.telemetry?.nearestPilot?.distance
+  if (d == null) return 'none'
+  if (d <= 25) return 'hot'
+  if (d <= 60) return 'warm'
+  return 'cold'
+})
 
 // Telepotu recall state: live anchor countdown drives the Q status line
 const anchorActive = computed(() =>
@@ -193,9 +215,22 @@ const reprintPercent = computed(() => {
 
     <!-- Top Match Header -->
     <div class="hud-top">
-      <div class="match-timer">
-        <span class="timer-label">TRIAL CLOCK</span>
-        <span class="timer-val">{{ formatTime(matchTime) }}</span>
+      <div class="top-left-cluster">
+        <!-- Objective: frags, rank, gap to leader -->
+        <div class="score-module" :class="{ leader: isLeader }" title="Your frags, rank and gap to the leader">
+          <div class="score-main">
+            <span class="score-frags">{{ player.score }}</span>
+            <span class="score-label">FRAGS</span>
+          </div>
+          <div class="score-sub">
+            <span class="score-rank">{{ myRank ? `#${myRank}` : '#6+' }}</span>
+            <span class="score-gap">{{ isLeader ? '👑 LEADER' : leader ? `−${scoreGap} · ${leader.name}` : '—' }}</span>
+          </div>
+        </div>
+        <div class="match-timer" :class="{ danger: clockDanger }">
+          <span class="timer-label">{{ clockDanger ? 'FINAL MINUTE' : 'TRIAL CLOCK' }}</span>
+          <span class="timer-val">{{ formatTime(matchTime) }}</span>
+        </div>
       </div>
 
       <!-- Live Networking & Performance Telemetry -->
@@ -232,10 +267,10 @@ const reprintPercent = computed(() => {
           <span class="telem-label">ROOM</span>
           <span class="telem-val text-cyan">{{ roomCode }} {{ copiedToast ? '✓ COPIED' : '📋' }}</span>
         </div>
-        <div class="telem-chip contact-chip" title="Nearest pilot within 100m">
+        <div class="telem-chip contact-chip" :class="`threat-${radarThreat}`" title="Nearest pilot within 100m">
           <span class="contact-beacon"></span>
           <span class="telem-label">RADAR</span>
-          <span class="telem-val text-cyan">{{ telemetry?.nearestPilot ? `${telemetry.nearestPilot.name} (${telemetry.nearestPilot.distance}m)` : '—' }}</span>
+          <span class="telem-val">{{ telemetry?.nearestPilot ? `${telemetry.nearestPilot.name} (${telemetry.nearestPilot.distance}m)` : '—' }}</span>
         </div>
       </div>
 
@@ -495,6 +530,84 @@ const reprintPercent = computed(() => {
   font-family: 'JetBrains Mono', monospace;
   font-weight: 700;
   color: #ffffff;
+}
+
+/* Final-minute urgency */
+.match-timer.danger {
+  border-color: rgba(239, 68, 68, 0.7);
+  animation: dangerPulse 1s infinite;
+}
+.match-timer.danger .timer-label {
+  color: #ef4444;
+}
+.match-timer.danger .timer-val {
+  color: #ef4444;
+}
+@keyframes dangerPulse {
+  0%, 100% { box-shadow: 0 0 6px rgba(239, 68, 68, 0.3); }
+  50% { box-shadow: 0 0 18px rgba(239, 68, 68, 0.65); }
+}
+
+/* Objective cluster: score module + clock */
+.top-left-cluster {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+}
+.score-module {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(11, 14, 22, 0.85);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  padding: 6px 18px;
+  border-radius: 6px;
+  backdrop-filter: blur(8px);
+}
+.score-module.leader {
+  border-color: rgba(245, 158, 11, 0.9);
+  box-shadow: 0 0 14px rgba(245, 158, 11, 0.35);
+}
+.score-main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1;
+}
+.score-frags {
+  font-size: 28px;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  color: #f59e0b;
+}
+.score-module.leader .score-frags {
+  color: #fbbf24;
+}
+.score-label {
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: rgba(255, 255, 255, 0.5);
+  font-weight: 700;
+}
+.score-sub {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-left: 1px solid rgba(255, 255, 255, 0.15);
+  padding-left: 12px;
+}
+.score-rank {
+  font-size: 16px;
+  font-weight: 700;
+  color: #ffffff;
+}
+.score-gap {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.6);
+  max-width: 150px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .pilot-badge {
@@ -1025,6 +1138,42 @@ const reprintPercent = computed(() => {
 .contact-chip {
   background: rgba(16, 185, 129, 0.15) !important;
   border-color: rgba(16, 185, 129, 0.5) !important;
+}
+
+/* Radar threat heat: color follows nearest-pilot distance */
+.contact-chip.threat-none .telem-val {
+  color: rgba(255, 255, 255, 0.45);
+}
+.contact-chip.threat-none .contact-beacon {
+  background-color: #475569;
+  box-shadow: none;
+  animation: none;
+}
+.contact-chip.threat-cold .telem-val {
+  color: #00f0ff;
+}
+.contact-chip.threat-warm {
+  background: rgba(245, 158, 11, 0.15) !important;
+  border-color: rgba(245, 158, 11, 0.5) !important;
+}
+.contact-chip.threat-warm .telem-val {
+  color: #f59e0b;
+}
+.contact-chip.threat-warm .contact-beacon {
+  background-color: #f59e0b;
+  box-shadow: 0 0 8px #f59e0b;
+}
+.contact-chip.threat-hot {
+  background: rgba(239, 68, 68, 0.18) !important;
+  border-color: rgba(239, 68, 68, 0.65) !important;
+}
+.contact-chip.threat-hot .telem-val {
+  color: #ef4444;
+}
+.contact-chip.threat-hot .contact-beacon {
+  background-color: #ef4444;
+  box-shadow: 0 0 10px #ef4444;
+  animation-duration: 0.4s;
 }
 
 .contact-beacon {
