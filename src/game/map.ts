@@ -293,6 +293,85 @@ export function getStaticMap(): MapData {
   quad(35, 1, -120, 4, 2, 3, 'cover', 'barren')
   quad(90, 1, -120, 3, 2, 4, 'cover', 'barren')
 
+  // ── Hub roof trim (parapet lip, vents, skylight) ──────────
+  // Parapet sits exactly on the roof slab (top y=20.3): touching faces,
+  // zero volume overlap. Glowing skylight strip faces the sky-ring.
+  box(0, 20.9, 8.3, 22.4, 1.2, 0.4, 'wall', 'neutral')
+  box(0, 20.9, -8.3, 22.4, 1.2, 0.4, 'wall', 'neutral')
+  box(10.8, 20.9, 0, 0.4, 1.2, 17, 'wall', 'neutral')
+  box(-10.8, 20.9, 0, 0.4, 1.2, 17, 'wall', 'neutral')
+  box(7, 20.8, 5, 2.4, 1.0, 2.4, 'cover', 'neutral')
+  box(-7, 20.8, 5, 2.4, 1.0, 2.4, 'cover', 'neutral')
+  box(0, 20.4, -5.5, 6, 0.25, 2.5, 'house_window', 'neutral')
+
+  // ── Gate gantries (avenue N/S + ridge E/W) ─────────────────
+  // Overhead beam on seated columns, emissive sign plate, flanking kiosks.
+  // Gantries sit 3 m past the gate structures so all existing cover stays clear.
+  for (const sz of [1, -1]) {
+    const gz = sz * 80
+    const biome = sz > 0 ? 'terra' : 'barren'
+    const bz = gz + sz * 3
+    box(0, 10.2, bz, 16, 1.2, 1.2, 'wall', biome)
+    box(-8, 5, bz, 1, 10, 1, 'pillar', biome)
+    box(8, 5, bz, 1, 10, 1, 'pillar', biome)
+    box(0, 10.2, bz + sz * 0.7, 6, 1.0, 0.15, 'house_window', 'neutral')
+    box(-8.5, 1.1, gz + sz * 5.5, 3, 2.2, 3, 'cover', biome)
+    box(8.5, 1.1, gz + sz * 5.5, 3, 2.2, 3, 'cover', biome)
+  }
+  for (const sx of [1, -1]) {
+    const gx = sx * 80
+    const biome = sx > 0 ? 'terra' : 'barren'
+    const bx = gx + sx * 3
+    box(bx, 10.2, 0, 1.2, 1.2, 16, 'wall', biome)
+    box(bx, 5, -8, 1, 10, 1, 'pillar', biome)
+    box(bx, 5, 8, 1, 10, 1, 'pillar', biome)
+    box(bx + sx * 0.7, 10.2, 0, 0.15, 1.0, 6, 'house_window', 'neutral')
+    box(gx, 1.1, -13.5, 3, 2.2, 3, 'cover', biome)
+    box(gx, 1.1, 13.5, 3, 2.2, 3, 'cover', biome)
+  }
+
+  // ── Outpost dressing (awnings, wall masts, pallet stacks) ──
+  // Awning compounds sit outside the U (toward map center) so the open
+  // face and flank covers keep their clearances. Masts embed in back walls.
+  for (const o of OUTPOSTS) {
+    const sx = Math.sign(o.cx), sz = Math.sign(o.cz)
+    const ax = o.cx - sx * 10, az = o.cz - sz * 10
+    box(ax, 4.2, az, 7, 0.3, 5, 'platform', o.biome)
+    for (const px of [-3, 3]) {
+      for (const pz of [-2, 2]) {
+        box(ax + px, 2.1, az + pz, 0.4, 4.2, 0.4, 'pillar', o.biome)
+      }
+    }
+    box(o.cx - sx * 5, 7.5, o.cz + sz * 6, 0.5, 9, 0.5, 'pillar', o.biome)
+    box(o.cx - sx * 5, 12.2, o.cz + sz * 6, 0.7, 0.4, 0.7, 'lamp_head', 'neutral')
+    box(o.cx + sx * 4.5, 0.5, o.cz + sz * 1, 2, 1, 2, 'cover', o.biome)
+    box(o.cx + sx * 4.5, 1.25, o.cz + sz * 1, 1.5, 0.5, 1.5, 'cover', o.biome)
+  }
+
+  // ── Avenue slide walls (low lane covers, biome per side) ───
+  for (const wx of [-7, 7]) {
+    box(wx, 0.75, 40, 1.0, 1.5, 8, 'cover', 'terra')
+    box(wx, 0.75, -40, 1.0, 1.5, 8, 'cover', 'barren')
+  }
+
+  // ── Deck step crates (climb-up route to each overlook deck) ─
+  for (const [dx, dz] of DECKS) {
+    const stepX = dx > 0 ? dx - 4.5 : dx + 4.5
+    box(stepX, 0.75, dz, 2.5, 1.5, 2.5, 'cover', 'neutral')
+  }
+
+  // ── L-shaped lane covers (axis-aligned pairs, one quad each so all
+  // four mirrors come from a single call — no duplicate boxes). Legs butt
+  // against the bar faces exactly for a clean L joint.
+  quad(28, 1, 58, 5, 2, 1.5, 'cover', 'neutral')
+  quad(30.5, 1, 61.25, 1.5, 2, 5, 'cover', 'neutral')
+
+  // ── Corner approach covers + courtyard barricades ──────────
+  quad(80, 0.9, 62, 5, 1.8, 2, 'cover', 'neutral')
+  quad(62, 0.9, 80, 2, 1.8, 5, 'cover', 'neutral')
+  quad(30, 0.6, 14, 3, 1.2, 1.2, 'cover', 'neutral')
+  quad(33, 0.5, 16.5, 1.5, 1.0, 1.5, 'cover', 'neutral')
+
   // ── Balanced fixed spawns (20, mirrored, hand-cleared) ───
   const SPAWN_Y = 1.6
   const spawnList: Array<[number, number]> = [
