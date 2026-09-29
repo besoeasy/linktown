@@ -578,6 +578,14 @@ export class GameEngine {
     if (!this.localPlayer.alive || this.localPlayer.invisible) return
     const now = Date.now()
     if (now - this.lastShotTime < CFG.FIRE_INTERVAL_MS) return
+    // Projector hand: the trigger is dead while the barrier is up.
+    if (this.localPlayer.shieldActive && now < this.localPlayer.shieldEnd) {
+      if (now - this.lastDryFire > 250) {
+        this.lastDryFire = now
+        sound.playDryFire()
+      }
+      return
+    }
     if (this.localPlayer.health <= CFG.SHOT_COST_SINGLE) {
       // Dry-fire feedback (throttled): the trigger does nothing silently otherwise.
       if (now - this.lastDryFire > 250) {
@@ -1524,9 +1532,11 @@ export class GameEngine {
     } else if (msg.type === 'shoot' && fromId && this.players.has(fromId)) {
       const shooter = this.players.get(fromId)!
       if (!shooter.alive || shooter.invisible) return
+      // Projector hand is authoritative too: no fire from inside a barrier.
+      const now = Date.now()
+      if (shooter.shieldActive && now < shooter.shieldEnd) return
       // Host-side fire-rate limit mirrors the local gate so packet
       // spam cannot buy unlimited DPS.
-      const now = Date.now()
       if (now - (this.remoteShotAt.get(fromId) ?? 0) < CFG.FIRE_INTERVAL_MS) return
       this.remoteShotAt.set(fromId, now)
       if (shooter.health <= CFG.SHOT_COST_SINGLE) return

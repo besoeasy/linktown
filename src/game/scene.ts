@@ -1302,6 +1302,9 @@ export class SceneRenderer {
   private fingerBaseX: number[] = []
   private blasterBarrel!: THREE.Group
   private blasterCore!: THREE.Mesh
+  private shieldLens!: THREE.Mesh
+  private shieldLensMat!: THREE.MeshBasicMaterial
+  private shieldPose = 0 // 0 = gun/hand, 1 = open projector cradle (smoothed)
   private thumbBaseGroup!: THREE.Group
   private thumbDistalGroup!: THREE.Group
   private readonly morphDim = new THREE.Color(0x1e4a52)
@@ -1623,6 +1626,16 @@ export class SceneRenderer {
     core.position.set(0, 0.004, -0.08)
     this.robotArm.add(core)
     this.blasterCore = core
+
+    // Shield projector lens: blooms on the open palm when the barrier is up
+    // (barrel sinks away — the hand stops being a gun).
+    this.shieldLensMat = new THREE.MeshBasicMaterial({ color: 0x00f0ff })
+    const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.027, 0.014, 16), this.shieldLensMat)
+    lens.rotation.x = Math.PI / 2
+    lens.position.set(0, 0.004, -0.125)
+    lens.visible = false
+    this.robotArm.add(lens)
+    this.shieldLens = lens
 
     // 5. Articulated Cybernetic Fingers (2-segment joints with chrome knuckle pins)
     this.fingerGroups = []
@@ -3375,6 +3388,47 @@ export class SceneRenderer {
     }
   }
 
+  /**
+   * Shield projector cradle (s = 0 gun/hand, 1 open palm). Layered on top of
+   * whatever the blaster morph produced: barrel sinks into the housing,
+   * fingers rise and fan into a cradle, thumb splays, lens blooms.
+   * The trigger reads dead because the hand visibly stopped being a gun.
+   */
+  private applyShieldPose(s: number) {
+    const m = this.blasterMorph
+    const retract = 1 - s * 0.92
+    this.blasterBarrel.scale.set(
+      Math.max(0.001, m * retract),
+      Math.max(0.001, m * retract),
+      Math.max(0.01, THREE.MathUtils.lerp(0.01, 1.0, m) * retract)
+    )
+    this.blasterBarrel.position.z = THREE.MathUtils.lerp(-0.11, -0.21, m) + s * 0.05
+    this.blasterBarrel.visible = m * retract > 0.02
+    this.blasterCore.visible = m * retract > 0.02
+    this.blasterCore.position.z = this.blasterBarrel.position.z + 0.04
+
+    for (let i = 0; i < this.fingerGroups.length; i++) {
+      const g = this.fingerGroups[i]
+      const gunX = THREE.MathUtils.lerp(this.fingerHandRotX[i], this.fingerBlasterRotX[i], m)
+      g.rotation.x = THREE.MathUtils.lerp(gunX, 0.38, s)
+      const gunPX = THREE.MathUtils.lerp(this.fingerBaseX[i], this.fingerBaseX[i] * 0.58, m)
+      g.position.x = THREE.MathUtils.lerp(gunPX, this.fingerBaseX[i] * 1.45, s)
+      const dg = this.fingerDistalGroups[i]
+      if (dg) {
+        dg.rotation.x = THREE.MathUtils.lerp(THREE.MathUtils.lerp(0.12, -0.95, m), 0.05, s)
+      }
+    }
+
+    if (this.thumbBaseGroup) {
+      this.thumbBaseGroup.rotation.y = THREE.MathUtils.lerp(THREE.MathUtils.lerp(0.35, 1.05, m), -0.30, s)
+      this.thumbBaseGroup.rotation.x = THREE.MathUtils.lerp(THREE.MathUtils.lerp(0.10, 0.35, m), -0.15, s)
+    }
+
+    this.shieldLens.visible = s > 0.02
+    this.shieldLens.scale.setScalar(Math.max(0.001, s))
+    this.shieldLensMat.color.setHex(0x00f0ff).multiplyScalar(0.6 + s * 1.8)
+  }
+
   setFirstPersonShield(active: boolean) {
     // Fade is animated in render(); here we only set the target
     this.fpShieldTarget = active ? 1 : 0
@@ -3852,11 +3906,11 @@ export class SceneRenderer {
     const bobY = Math.sin(this.bobTimer * 2) * 0.004 * (1 - this.armRest * 0.8)
     this.robotArm.position.set(
       0.28 + bobX,
-      -0.22 + bobY - this.armRest * 0.09,
-      -0.42 + this.armRecoil + this.armRest * 0.05
+      -0.22 + bobY - this.armRest * 0.09 + this.shieldPose * 0.07,
+      -0.42 + this.armRecoil + this.armRest * 0.05 - this.shieldPose * 0.05
     )
     this.robotArm.rotation.set(
-      0.05 - this.armRecoilRot + this.armRest * 0.42,
+      0.05 - this.armRecoilRot + this.armRest * 0.42 - this.shieldPose * 0.30,
       -0.06 + this.armRest * 0.10,
       -0.04 + bobX * 2 - this.armRest * 0.06
     )
@@ -3893,6 +3947,18 @@ export class SceneRenderer {
       )
       this.applyBlasterMorph(this.blasterMorph)
     }
+
+    // Shield projector cradle eases in while the barrier is up; restoring
+    // the exact gun/hand state on the way out.
+    const shieldPoseTarget = shieldActive ? 1 : 0
+    if (this.shieldPose !== shieldPoseTarget) {
+      this.shieldPose = THREE.MathUtils.clamp(
+        this.shieldPose + Math.sign(shieldPoseTarget - this.shieldPose) * dt * 7,
+        0, 1
+      )
+      if (this.shieldPose === 0) this.applyBlasterMorph(this.blasterMorph)
+    }
+    if (this.shieldPose > 0) this.applyShieldPose(this.shieldPose)
 
     // First person shield: smooth fade, energy pulse, hit-flash decay
     this.setFirstPersonShield(shieldActive)

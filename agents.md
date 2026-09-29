@@ -43,7 +43,7 @@ Caches are the only map-spawned income. One death = one 100 cache at death pos. 
 | Hitscan shot | -2 per shot, 100ms interval = max 20/s drain |
 | Cannot fire | blocked at 2 hull or less |
 | Super (E) | -50, requires 51+, 10s 3x dmg + 2x speed, blocks shield/cloak |
-| Shield (R) | -80, requires 81+, 10s full immunity |
+| Shield (R) | -80, requires 81+, 10s full immunity, trigger dead while up (projector hand) |
 | Anchor Q | 0 cost, 3s immunity, 40s CD |
 | Super Jump | -20 |
 | Normal jump | 0 currently, free verticality via pads |
@@ -59,7 +59,7 @@ Math:
 
 ## 5. Ability Economy (4 starter Maker cores, same chassis)
 
-All Q blocked while Super/invisible active. Cooldowns are time gates, most hull gates are zero except via side-effects. Self-only, no targeting.
+All Q blocked while Super/invisible active. Firing blocked while Shield is up (breather, not DPS window). Cooldowns are time gates, most hull gates are zero except via side-effects. Self-only, no targeting.
 
 * Denja 30s: 2x speed 8s free.
 * Mednix 20s: cheapest sustain, avg +25.5.
