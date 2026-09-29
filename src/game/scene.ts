@@ -1254,6 +1254,7 @@ const fxProjectileAuraGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.85, 8)
 const fxProjectileCoreMat = new THREE.MeshBasicMaterial({ color: 0xffffff })
 const fxSparkGeo = new THREE.SphereGeometry(0.035, 4, 4)
 const fxShardGeo = new THREE.BoxGeometry(0.06, 0.28, 0.06)
+const fxDummy = new THREE.Object3D()
 const fxAdditiveMatCache = new Map<number, THREE.MeshBasicMaterial>()
 function fxAdditiveMat(color: number, opacity: number): THREE.MeshBasicMaterial {
   const key = (color * 1000 + Math.round(opacity * 100)) >>> 0
@@ -1363,6 +1364,10 @@ export class SceneRenderer {
   /** Containment-field energy walls: flowing texture scrolled in render(). */
   private shieldWallTex?: THREE.CanvasTexture
   private shieldWallMats: THREE.MeshBasicMaterial[] = []
+  /** Kill/respawn transients: grow-and-fade flashes, rings, beams. */
+  private flashes: { mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial; life: number; maxLife: number; grow: number }[] = []
+  /** Scorch ring-buffer: 32 static kill marks, oldest recycled first. */
+  private scorch?: { inst: THREE.InstancedMesh; cursor: number }
   private portalMeshes = new Map<number, {
     group: THREE.Group
     endA: THREE.Group
@@ -1962,7 +1967,7 @@ export class SceneRenderer {
     micro.receiveShadow = true
     this.scene.add(micro)
 
-    // 2. Animated water ponds with engineered containment rims & corner beacons
+    // 2. Coolant slabs: animated nanite-coolant pools flush with the grade
     this.waterTexture = createWaterTexture()
     this.waterBumpTexture = createBumpTexture(this.waterTexture)
     this.waterBumpTexture.repeat.set(3, 3)
@@ -1990,50 +1995,14 @@ export class SceneRenderer {
       [-20, 30, 14, 10],
       [40, -40, 18, 14]
     ]
-    const rimMat = new THREE.MeshStandardMaterial({
-      color: 0x1e242c,
-      roughness: 0.42,
-      metalness: 0.85
-    })
-    const rimGlowMat = new THREE.MeshBasicMaterial({
-      color: 0x00f0ff,
-      transparent: true,
-      opacity: 0.65
-    })
+    // Coolant slabs sit flush with the grade (y=0.03): honest ground dressing
+    // with no collision by design — nothing to trip over, nothing to fake.
     for (const [wx, wz, ww, wd] of waterPonds) {
       const w = new THREE.Mesh(new THREE.PlaneGeometry(ww, wd), waterMat)
       w.rotation.x = -Math.PI / 2
-      w.position.set(wx, 0.08, wz)
+      w.position.set(wx, 0.03, wz)
+      w.receiveShadow = true
       this.scene.add(w)
-
-      // Containment basin curbs
-      const curbThick = 0.6
-      const curbH = 0.35
-      const curbNSGeo = new THREE.BoxGeometry(ww + curbThick * 2, curbH, curbThick)
-      const curbN = new THREE.Mesh(curbNSGeo, rimMat)
-      curbN.position.set(wx, 0.15, wz - wd / 2 - curbThick / 2)
-      const curbS = new THREE.Mesh(curbNSGeo, rimMat)
-      curbS.position.set(wx, 0.15, wz + wd / 2 + curbThick / 2)
-
-      const curbEWGeo = new THREE.BoxGeometry(curbThick, curbH, wd)
-      const curbE = new THREE.Mesh(curbEWGeo, rimMat)
-      curbE.position.set(wx + ww / 2 + curbThick / 2, 0.15, wz)
-      const curbW = new THREE.Mesh(curbEWGeo, rimMat)
-      curbW.position.set(wx - ww / 2 - curbThick / 2, 0.15, wz)
-      this.scene.add(curbN, curbS, curbE, curbW)
-
-      // Corner beacon pylons
-      const beaconGeo = new THREE.BoxGeometry(0.5, 0.6, 0.5)
-      for (const [bx, bz] of [
-        [wx - ww / 2 - curbThick / 2, wz - wd / 2 - curbThick / 2],
-        [wx + ww / 2 + curbThick / 2, wz - wd / 2 - curbThick / 2],
-        [wx - ww / 2 - curbThick / 2, wz + wd / 2 + curbThick / 2],
-        [wx + ww / 2 + curbThick / 2, wz + wd / 2 + curbThick / 2]
-      ]) {
-        const beacon = new THREE.Mesh(beaconGeo, rimGlowMat)
-        beacon.position.set(bx, 0.3, bz)
-        this.scene.add(beacon)
-      }
     }
 
     // 3. Procedural architectural PBR materials for map boxes
@@ -2271,6 +2240,33 @@ export class SceneRenderer {
       this.scene.add(shadows)
     }
 
+    // 3d. Kill-scorch ring-buffer (slots parked underground until claimed).
+    {
+      const scorchTex = createContactShadowTexture()
+      const scorchGeo = new THREE.PlaneGeometry(2.6, 2.6)
+      scorchGeo.rotateX(-Math.PI / 2)
+      const scorchMat = new THREE.MeshBasicMaterial({
+        map: scorchTex,
+        transparent: true,
+        opacity: 0.62,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -2
+      })
+      const inst = new THREE.InstancedMesh(scorchGeo, scorchMat, 32)
+      inst.renderOrder = 2
+      inst.frustumCulled = false
+      const d = fxDummy
+      d.position.set(0, -10, 0)
+      d.scale.set(1, 1, 1)
+      d.rotation.set(0, 0, 0)
+      d.updateMatrix()
+      for (let i = 0; i < 32; i++) inst.setMatrixAt(i, d.matrix)
+      inst.instanceMatrix.needsUpdate = true
+      this.scene.add(inst)
+      this.scorch = { inst, cursor: 0 }
+    }
+
     // 3c. Ground scatter (visual only, no collision): barren rock fields
     // west, grass tufts east, concrete debris around the plaza. Deterministic
     // seed => identical on every client. Rejected near buildings, avenues,
@@ -2363,6 +2359,58 @@ export class SceneRenderer {
       debInst.castShadow = true
       debInst.receiveShadow = true
       this.scene.add(debInst)
+    }
+
+    // 3e. Exterior skyline: decommissioned port silhouettes beyond the field.
+    // Scene-only meshes (never in map.boxes): zero collision, hitscan and
+    // physics are untouched. Fog + distance do the atmospheric perspective.
+    {
+      const rnd = mulberry32(2077)
+      const darkMat = new THREE.MeshStandardMaterial({ color: 0x39434f, roughness: 0.85, metalness: 0.15 })
+      const winMat = new THREE.MeshStandardMaterial({
+        color: 0x2c3540, roughness: 0.7, metalness: 0.2,
+        emissive: 0x88aaff, emissiveIntensity: 0.25
+      })
+      const towers: THREE.Matrix4[] = []
+      const habs: THREE.Matrix4[] = []
+      const d = fxDummy
+      for (let i = 0; i < 52; i++) {
+        const ang = (i / 52) * Math.PI * 2 + (rnd() - 0.5) * 0.12
+        const dist = 215 + rnd() * 110
+        const x = Math.cos(ang) * dist
+        const z = Math.sin(ang) * dist
+        const w = 10 + rnd() * 22
+        const h = 22 + rnd() * 58
+        const dd = 10 + rnd() * 22
+        d.position.set(x, h / 2 - 2, z)
+        d.scale.set(w, h, dd)
+        d.rotation.set(0, rnd() * Math.PI, 0)
+        d.updateMatrix()
+        ;(rnd() < 0.45 ? habs : towers).push(d.matrix.clone())
+      }
+      // A few docked-freighter slabs: long, low, far out
+      for (let i = 0; i < 6; i++) {
+        const ang = rnd() * Math.PI * 2
+        const dist = 260 + rnd() * 60
+        d.position.set(Math.cos(ang) * dist, 6, Math.sin(ang) * dist)
+        d.scale.set(55 + rnd() * 30, 14 + rnd() * 8, 12)
+        d.rotation.set(0, rnd() * Math.PI, 0)
+        d.updateMatrix()
+        habs.push(d.matrix.clone())
+      }
+      const towerGeo = new THREE.BoxGeometry(1, 1, 1)
+      const towerInst = new THREE.InstancedMesh(towerGeo, darkMat, Math.max(1, towers.length))
+      towers.forEach((m, i) => towerInst.setMatrixAt(i, m))
+      towerInst.instanceMatrix.needsUpdate = true
+      towerInst.castShadow = false
+      towerInst.receiveShadow = false
+      this.scene.add(towerInst)
+      const habInst = new THREE.InstancedMesh(towerGeo, winMat, Math.max(1, habs.length))
+      habs.forEach((m, i) => habInst.setMatrixAt(i, m))
+      habInst.instanceMatrix.needsUpdate = true
+      habInst.castShadow = false
+      habInst.receiveShadow = false
+      this.scene.add(habInst)
     }
 
     // 4. Central Meridian Hub Holographic Billboards (Lore: Season 3049 Broadcast & Makers)
@@ -3372,8 +3420,7 @@ export class SceneRenderer {
     })
   }
 
-  spawnImpactSparks(pos: THREE.Vector3, color: number = 0x00f0ff) {
-    const count = 6
+  spawnImpactSparks(pos: THREE.Vector3, color: number = 0x00f0ff) {    const count = 6
     const sparkMat = fxAdditiveMat(color, 0.9)
     for (let i = 0; i < count; i++) {
       const mesh = new THREE.Mesh(fxSparkGeo, sparkMat)
@@ -3386,6 +3433,67 @@ export class SceneRenderer {
       this.scene.add(mesh)
       this.sparks.push({ mesh, vel, life: 0.12 })
     }
+  }
+
+  /** Chassis-destroyed spectacle: spark burst + core flash + shockwave ring. */
+  killEffect(x: number, y: number, z: number) {
+    const pos = new THREE.Vector3(x, y, z)
+    const cols = [0xffffff, 0xffaa00, 0x00f0ff]
+    for (let i = 0; i < 26; i++) {
+      const mesh = new THREE.Mesh(fxSparkGeo, fxAdditiveMat(cols[i % 3], 0.95))
+      mesh.position.copy(pos)
+      const th = Math.random() * Math.PI * 2
+      const ph = Math.acos(2 * Math.random() - 1)
+      const sp = 6 + Math.random() * 12
+      const vel = new THREE.Vector3(
+        Math.sin(ph) * Math.cos(th) * sp,
+        Math.abs(Math.cos(ph)) * sp * 0.9 + 3,
+        Math.sin(ph) * Math.sin(th) * sp
+      )
+      this.scene.add(mesh)
+      this.sparks.push({ mesh, vel, life: 0.45 + Math.random() * 0.25 })
+    }
+    this.spawnFlash(pos, 0xfff2cc, 5.5, 0.35, new THREE.SphereGeometry(0.5, 12, 12))
+    const ringGeo = new THREE.RingGeometry(0.9, 1.0, 40)
+    ringGeo.rotateX(-Math.PI / 2)
+    this.spawnFlash(new THREE.Vector3(x, Math.max(0.15, y - 1.0), z), 0xffaa00, 7.0, 0.5, ringGeo)
+  }
+
+  /** Reprint beam: vertical light column marking a respawned shell. */
+  respawnBeam(x: number, y: number, z: number) {
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0x9be8ff, transparent: true, opacity: 0.5,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
+    })
+    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.85, 7, 12, 1, true), mat)
+    mesh.position.set(x, y + 3.5, z)
+    this.scene.add(mesh)
+    this.flashes.push({ mesh, mat, life: 0.9, maxLife: 0.9, grow: 0.35 })
+  }
+
+  private spawnFlash(pos: THREE.Vector3, color: number, grow: number, life: number, geo: THREE.BufferGeometry) {
+    const mat = new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity: 0.9,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
+    })
+    const mesh = new THREE.Mesh(geo, mat)
+    mesh.position.copy(pos)
+    this.scene.add(mesh)
+    this.flashes.push({ mesh, mat, life, maxLife: life, grow })
+  }
+
+  /** Scorch mark where a shell fell. Static; oldest recycled after 32 kills. */
+  addScorch(x: number, z: number) {
+    if (!this.scorch) return
+    const d = fxDummy
+    d.position.set(x, 0.05, z)
+    const s = 0.8 + Math.random() * 0.5
+    d.scale.set(s, 1, s)
+    d.rotation.set(0, Math.random() * Math.PI, 0)
+    d.updateMatrix()
+    this.scorch.inst.setMatrixAt(this.scorch.cursor, d.matrix)
+    this.scorch.inst.instanceMatrix.needsUpdate = true
+    this.scorch.cursor = (this.scorch.cursor + 1) % 32
   }
 
   addNaniteCache(cache: NaniteCache) {
@@ -3806,6 +3914,22 @@ export class SceneRenderer {
         this.scene.remove(s.mesh)
         this.sparks.splice(i, 1)
       }
+    }
+
+    // Update kill flashes / rings / respawn beams (grow + fade, then free)
+    for (let i = this.flashes.length - 1; i >= 0; i--) {
+      const f = this.flashes[i]
+      f.life -= dt
+      if (f.life <= 0) {
+        this.scene.remove(f.mesh)
+        f.mesh.geometry.dispose()
+        f.mat.dispose()
+        this.flashes.splice(i, 1)
+        continue
+      }
+      const k = f.life / f.maxLife
+      f.mesh.scale.setScalar(1 + (1 - k) * f.grow)
+      f.mat.opacity = k * 0.9
     }
 
     // Animate 3rd person shields: spin, energy pulse, hit-flash decay

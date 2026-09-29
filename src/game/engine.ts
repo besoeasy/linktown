@@ -712,6 +712,10 @@ export class GameEngine {
       const cacheY = Math.max(groundHeight(target.x, target.z, this.map.seed), target.y) + 0.8
       this.spawnNaniteCache(target.x, cacheY, target.z, CFG.NANITE_CACHE_AMOUNT)
 
+      // Kill spectacle: chassis burst + scorch mark where the shell fell
+      this.scene.killEffect(target.x, target.y + 1.2, target.z)
+      this.scene.addScorch(target.x, target.z)
+
       const killMsg: KillMsg = {
         type: 'kill',
         shooterId,
@@ -991,6 +995,7 @@ export class GameEngine {
           p.shieldActive = false
           p.shieldEnd = 0
           this.clearAnchor(p)
+          this.scene.respawnBeam(s.x, s.y, s.z)
           if (p.id === this.localPlayer.id) {
             this.localPlayer.x = s.x
             this.localPlayer.y = s.y
