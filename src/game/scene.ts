@@ -1315,6 +1315,8 @@ export class SceneRenderer {
   private spray?: { points: THREE.Points; pos: Float32Array; vel: Float32Array; age: Float32Array; life: Float32Array; count: number }
   private dust?: { points: THREE.Points; pos: Float32Array; vel: Float32Array; count: number }
   private lampHeadMat?: THREE.MeshStandardMaterial
+  /** Telepotu relay anchors: one marker group per player, synced in updatePlayers. */
+  private anchorMeshes = new Map<number, THREE.Group>()
   private portalMeshes = new Map<number, {
     group: THREE.Group
     endA: THREE.Group
@@ -2569,6 +2571,11 @@ export class SceneRenderer {
   updatePlayers(players: PlayerState[], localPlayerId: number) {
     const activeIds = new Set<number>()
 
+    // Relay anchors are visible to everyone (counterplay) — local included.
+    for (const p of players) {
+      this.syncAnchor(p)
+    }
+
     for (const p of players) {
       if (p.id === localPlayerId) continue
       activeIds.add(p.id)
@@ -2689,6 +2696,61 @@ export class SceneRenderer {
         this.playerMeshes.delete(id)
       }
     }
+
+    for (const [id, grp] of this.anchorMeshes) {
+      if (!players.some(p => p.id === id)) {
+        this.scene.remove(grp)
+        this.anchorMeshes.delete(id)
+      }
+    }
+  }
+
+  /**
+   * Telepotu relay anchor marker: amber ground ring + light beam.
+   * Blinks faster as expiry nears. Hidden for dead/anchorless shells.
+   */
+  private syncAnchor(p: PlayerState) {
+    const now = Date.now()
+    const live =
+      p.alive &&
+      p.anchorExpires != null && now < p.anchorExpires &&
+      p.anchorX != null && p.anchorY != null && p.anchorZ != null
+    let g = this.anchorMeshes.get(p.id)
+    if (!live) {
+      if (g) {
+        this.scene.remove(g)
+        this.anchorMeshes.delete(p.id)
+      }
+      return
+    }
+    if (!g) {
+      g = new THREE.Group()
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: 0xf59e0b, transparent: true, opacity: 0.85,
+        blending: THREE.AdditiveBlending, depthWrite: false
+      })
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(1.1, 0.07, 8, 32), ringMat)
+      ring.rotation.x = -Math.PI / 2
+      ring.name = 'ring'
+      const beamMat = new THREE.MeshBasicMaterial({
+        color: 0xf59e0b, transparent: true, opacity: 0.25,
+        blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
+      })
+      const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.55, 3.2, 12, 1, true), beamMat)
+      beam.position.y = 1.6
+      g.add(ring, beam)
+      g.userData.ringMat = ringMat
+      this.scene.add(g)
+      this.anchorMeshes.set(p.id, g)
+    }
+    g.position.set(p.anchorX!, p.anchorY! + 0.12, p.anchorZ!)
+    const t = now / 1000
+    const ring = g.getObjectByName('ring')!
+    ring.rotation.z = t * 1.8
+    ;(g.userData.ringMat as THREE.MeshBasicMaterial).opacity =
+      0.65 + 0.3 * (0.5 + 0.5 * Math.sin(t * 4))
+    const remainFrac = (p.anchorExpires! - now) / CFG.ANCHOR_LIFETIME
+    g.visible = remainFrac > 0.15 || Math.sin(t * 14) > -0.2
   }
 
   private createPlayerMesh(p: PlayerState): THREE.Group {

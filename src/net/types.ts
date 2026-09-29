@@ -22,6 +22,11 @@ export interface PlayerState {
   cloakEnd?: number
   lastAbilityAt: number
   lastDamageAt?: number
+  /** Telepotu recall anchor: drop point + expiry. Synced via gameState. */
+  anchorX?: number
+  anchorY?: number
+  anchorZ?: number
+  anchorExpires?: number
   isBot?: boolean
   ping?: number
 }

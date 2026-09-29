@@ -34,6 +34,8 @@ export const CFG = {
   PORTAL_CHANCE: 0.5,       // Chance per roll (only when none active)
   PORTAL_LIFETIME: 10,      // Seconds a portal pair stays open
   PORTAL_RADIUS: 2.5,       // Step-in trigger radius at each mouth
+  ANCHOR_LIFETIME: 30000,   // Telepotu relay anchor lifetime (ms)
+  RECALL_COST: 15,          // Nanite mass spent to warp back to anchor
   JUMP_SPEED: 18,           // Base vertical jump velocity
   GRAVITY: 32,              // Gravity units/sec^2
   SUPER_JUMP_SPEED: 44,     // High jump velocity (~10x height)
@@ -57,6 +59,7 @@ export type CoreId =
   | 'mednix'
   | 'tank'
   | 'anchor'
+  | 'telepotu'
 
 export interface CoreInfo {
   id: CoreId
@@ -114,6 +117,17 @@ export const CORE_DETAILS: Record<CoreId, CoreInfo> = {
     badge: '⚓',
     desc: 'Deploys a pre-charged cell for 3s of full immunity with 0 Hull cost.',
     lore: 'Standard military guard cell designed for breaching hot drop zones.'
+  },
+  telepotu: {
+    id: 'telepotu',
+    name: 'Telepotu',
+    maker: 'Vela Relay Compact',
+    ability: 'Recall Relay',
+    cooldown: 30000,
+    color: '#f59e0b',
+    badge: '📡',
+    desc: 'Drops a relay anchor with Q. Press Q again within 30s to warp back for 15 Hull.',
+    lore: 'Vela breakaway-freight recall beacons, tuned for hot extractions.'
   },
 }
 

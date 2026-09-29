@@ -458,6 +458,12 @@ export class GameEngine {
   private triggerClassAbility() {
     if (!this.localPlayer.alive || this.localPlayer.superActive || this.localPlayer.invisible) return
     const now = Date.now()
+    // Recall Relay manages its own gate: drops are free, only recalls
+    // consume the 30s cooldown (see triggerTelepotu).
+    if (this.localPlayer.character === 'telepotu') {
+      this.triggerTelepotu(now)
+      return
+    }
     const core = CORE_DETAILS[this.localPlayer.character]
     if (core.cooldown > 0 && now - this.lastAbilityUsedAt < core.cooldown) return
 
@@ -474,9 +480,48 @@ export class GameEngine {
     this.applyAbility(this.localPlayer)
   }
 
+  /**
+   * Telepotu Q routing. Drop (no live anchor) is free and instant so the
+   * escape tool is always at hand; recall (live anchor) pays 15 Hull and
+   * the 30s cooldown. Client predicts both locally because live-player
+   * positions never sync down; the host re-applies authoritatively.
+   */
+  private triggerTelepotu(now: number) {
+    if (!this.hasLiveAnchor(this.localPlayer, now)) {
+      sound.playAbility()
+      if (this.mode === 'client') {
+        this.applyTelepotu(this.localPlayer, now)
+        this.client?.send({ type: 'classAbility' })
+        return
+      }
+      this.applyAbility(this.localPlayer)
+      return
+    }
+    if (now - this.lastAbilityUsedAt < CORE_DETAILS.telepotu.cooldown) return
+    this.lastAbilityUsedAt = now
+    this.localPlayer.lastAbilityAt = now
+    sound.playAbility()
+    if (this.mode === 'client') {
+      this.applyTelepotu(this.localPlayer, now)
+      this.client?.send({ type: 'classAbility' })
+      return
+    }
+    this.applyAbility(this.localPlayer)
+  }
+
+  private hasLiveAnchor(p: PlayerState, now: number): boolean {
+    return (
+      p.anchorExpires != null && now < p.anchorExpires &&
+      p.anchorX != null && p.anchorY != null && p.anchorZ != null
+    )
+  }
+
   private applyAbility(player: PlayerState) {
     const now = Date.now()
     switch (player.character) {
+      case 'telepotu':
+        this.applyTelepotu(player, now)
+        break
       case 'denja':
         // Overdrive: handled via speed multiplier in tick
         break
@@ -491,6 +536,41 @@ export class GameEngine {
         player.shieldEnd = now + 3000
         break
     }
+  }
+
+  private clearAnchor(player: PlayerState) {
+    player.anchorX = undefined
+    player.anchorY = undefined
+    player.anchorZ = undefined
+    player.anchorExpires = undefined
+  }
+
+  /**
+   * Telepotu Recall Relay (two-tap, self-only, deterministic).
+   * First press drops a visible anchor at the shell's feet (free).
+   * Second press warps back for RECALL_COST hull. Broke recalls fizzle
+   * and keep the anchor; attempted recalls consume the 30s cooldown.
+   */
+  private applyTelepotu(player: PlayerState, now: number): boolean {
+    if (!this.hasLiveAnchor(player, now)) {
+      player.anchorX = player.x
+      player.anchorY = player.y
+      player.anchorZ = player.z
+      player.anchorExpires = now + CFG.ANCHOR_LIFETIME
+      this.scene.portalWarpEffect(player.x, player.y, player.z)
+      return true
+    }
+    if (player.health >= CFG.RECALL_COST + 1) {
+      player.health -= CFG.RECALL_COST
+      this.markHullSpent(player, now)
+      player.x = player.anchorX!
+      player.y = player.anchorY!
+      player.z = player.anchorZ!
+      this.clearAnchor(player)
+      this.scene.portalWarpEffect(player.x, player.y, player.z)
+      return true
+    }
+    return false
   }
 
   private shoot() {
@@ -895,6 +975,7 @@ export class GameEngine {
           p.superEnd = 0
           p.shieldActive = false
           p.shieldEnd = 0
+          this.clearAnchor(p)
           if (p.id === this.localPlayer.id) {
             this.localPlayer.x = s.x
             this.localPlayer.y = s.y
@@ -926,6 +1007,7 @@ export class GameEngine {
 
       if (p.superActive && now > p.superEnd) p.superActive = false
       if (p.shieldActive && now > p.shieldEnd) p.shieldActive = false
+      if (p.anchorExpires && now >= p.anchorExpires) this.clearAnchor(p)
       if (p.invisible && p.cloakEnd && now >= p.cloakEnd) {
         p.invisible = false
         p.cloakEnd = 0
@@ -1522,10 +1604,15 @@ export class GameEngine {
         // Host-side cooldown mirrors the local gate so Q-packet spam
         // cannot buy infinite heals/drains/immunities.
         const now = Date.now()
-        const cooldown = CORE_DETAILS[p.character]?.cooldown ?? 0
-        if (cooldown > 0 && now - (p.lastAbilityAt || 0) < cooldown) return
-        p.lastAbilityAt = now
-        this.applyAbility(p)
+        // Relay drops are free (no anchor yet); only recalls are gated.
+        if (p.character === 'telepotu' && !this.hasLiveAnchor(p, now)) {
+          this.applyTelepotu(p, now)
+        } else {
+          const cooldown = CORE_DETAILS[p.character]?.cooldown ?? 0
+          if (cooldown > 0 && now - (p.lastAbilityAt || 0) < cooldown) return
+          p.lastAbilityAt = now
+          this.applyAbility(p)
+        }
       }
     } else if (msg.type === 'crouch' && fromId && this.players.has(fromId)) {
       this.players.get(fromId)!.crouching = msg.state

@@ -83,6 +83,14 @@ const qPercent = computed(() => {
 
 const abilityReady = computed(() => !props.player.superActive && qTimeRemaining.value <= 0)
 
+// Telepotu recall state: live anchor countdown drives the Q status line
+const anchorActive = computed(() =>
+  props.player.character === 'telepotu' && (props.player.anchorExpires || 0) > currentTime.value
+)
+const anchorSecs = computed(() =>
+  Math.max(0, ((props.player.anchorExpires || 0) - currentTime.value) / 1000)
+)
+
 // E Super Timer (duration = 10s)
 const eTimeRemaining = computed(() => {
   if (!props.player.superActive || !props.player.superEnd) return 0
@@ -318,7 +326,7 @@ const reprintPercent = computed(() => {
             <div class="action-info">
               <span class="action-name">{{ core.ability }}</span>
               <span class="action-status">
-                {{ player.superActive ? 'DISABLED (SUPER)' : abilityReady ? 'READY' : `${qTimeRemaining.toFixed(1)}s` }}
+                {{ player.superActive ? 'DISABLED (SUPER)' : anchorActive ? `ANCHOR ${anchorSecs.toFixed(0)}s · Q = RECALL` : abilityReady ? 'READY' : `${qTimeRemaining.toFixed(1)}s` }}
               </span>
             </div>
           </div>
