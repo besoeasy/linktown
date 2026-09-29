@@ -131,7 +131,19 @@ export function getStaticMap(): MapData {
   box(-BH, DH + (WH - DH) / 2, 0, WT, WH - DH, DW * 2, 'building', 'neutral')
   // Corner towers
   quad(BH, WH / 2, BH, 4, WH, 4, 'building', 'neutral')
-  box(0, WH + 0.5, 0, BH * 2 + 2, 1, BH * 2 + 2, 'platform', 'neutral')
+  // Sky-ring walkway: 4 deck segments linking the corner towers (tops flush
+  // at y=14). Replaces the old solid 46x46 slab, which cut through the Hub,
+  // shadowed all of mid and blocked jump-pad flight arcs crossing center.
+  // Pad/portal access only — same verticality language as the sniper nests.
+  box(0, 13.75, -22, 40, 0.5, 3, 'platform', 'neutral')
+  box(0, 13.75, 22, 40, 0.5, 3, 'platform', 'neutral')
+  box(22, 13.75, 0, 3, 0.5, 40, 'platform', 'neutral')
+  box(-22, 13.75, 0, 3, 0.5, 40, 'platform', 'neutral')
+  // Outer railings (crouch-height cover, sightline over the top standing)
+  box(0, 14.6, -23.4, 40, 1.2, 0.3, 'cover', 'neutral')
+  box(0, 14.6, 23.4, 40, 1.2, 0.3, 'cover', 'neutral')
+  box(23.4, 14.6, 0, 0.3, 1.2, 40, 'cover', 'neutral')
+  box(-23.4, 14.6, 0, 0.3, 1.2, 40, 'cover', 'neutral')
   quad(14, WH / 2, 14, 2.5, WH, 2.5, 'pillar', 'neutral')
 
   // ── Central tactical cover ───────────────────────────────
@@ -141,13 +153,24 @@ export function getStaticMap(): MapData {
   box(8, 1, 8, 4, 2, 4, 'cover', 'neutral')
   box(0, 7.5, -15, 36, 1, 12, 'platform', 'neutral')
   box(0, 9.5, -9, 36, 2, 1, 'cover', 'neutral')
+  // Mirrored south deck + wall (pad-to-deck route over the fountain plaza,
+  // symmetric with the north side)
+  box(0, 7.5, 15, 36, 1, 12, 'platform', 'neutral')
+  box(0, 9.5, 9, 36, 2, 1, 'cover', 'neutral')
   box(16, 1.5, 0, 4, 3, 4, 'cover', 'neutral')
   box(16, 3.5, -5, 4, 3, 4, 'cover', 'neutral')
   box(16, 7, -11, 4, 2, 4, 'cover', 'neutral')
+  // Mirrored west stack (fair fights on both flanks)
+  box(-16, 1.5, 0, 4, 3, 4, 'cover', 'neutral')
+  box(-16, 3.5, -5, 4, 3, 4, 'cover', 'neutral')
+  box(-16, 7, -11, 4, 2, 4, 'cover', 'neutral')
 
   // ── North/South avenues ──────────────────────────────────
   box(0, 0.05, 45, 6.5, 0.1, 70, 'path', 'neutral')
   box(0, 0.05, -45, 6.5, 0.1, 70, 'path', 'neutral')
+  // Mid-avenue blockers break the 70m sniper lanes (spawns at ±65 keep cover)
+  box(0, 1, 48, 4, 2, 2, 'cover', 'terra')
+  box(0, 1, -48, 4, 2, 2, 'cover', 'barren')
   for (let pz = 17; pz < 82; pz += 5) box(0, 0.1, pz, 0.28, 0.015, 2.2, 'road_marking', 'neutral')
   for (let pz = -17; pz > -82; pz -= 5) box(0, 0.1, pz, 0.28, 0.015, 2.2, 'road_marking', 'neutral')
   for (const side of [-1, 1]) {
@@ -291,6 +314,10 @@ export function getStaticMap(): MapData {
   const pois: Poi[] = [
     { name: 'Meridian Hub', x: 0, z: 0 },
     { name: 'Fountain Plaza', x: 0, z: 17 },
+    { name: 'North Ring', x: 0, z: -22 },
+    { name: 'South Ring', x: 0, z: 22 },
+    { name: 'East Ring', x: 22, z: 0 },
+    { name: 'West Ring', x: -22, z: 0 },
     { name: 'North Gate', x: 0, z: 80 },
     { name: 'South Gate', x: 0, z: -80 },
     { name: 'East Ridge', x: 80, z: 0 },
