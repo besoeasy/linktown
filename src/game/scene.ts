@@ -2081,7 +2081,7 @@ export class SceneRenderer {
 
   private createPlayerMesh(p: PlayerState): THREE.Group {
     const group = new THREE.Group()
-    const core = CORE_DETAILS[p.character] || CORE_DETAILS.telepotu
+    const core = CORE_DETAILS[p.character] || CORE_DETAILS.denja
 
     // ── High-Fidelity Materials for RX-11 Chassis ─────────────────────────────
     // 1. Primary Nanite Armor: Dark carbon-nanite alloy with subtle gloss

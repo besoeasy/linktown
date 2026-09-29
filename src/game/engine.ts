@@ -120,7 +120,7 @@ export class GameEngine {
   private lastShotTime = 0
   private lastHitTime = Date.now()
   private inputDisposers: Array<() => void> = []
-  /** Pending setTimeout/setInterval handles (cloak, leech, burnout) so
+  /** Pending setTimeout/setInterval handles for timed abilities so
    *  destroy()/respawn can cancel them instead of leaking callbacks. */
   private abilityTimers = new Set<ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>>()
   /** Last accepted shot timestamp per remote peer (host-side fire-rate limit). */
@@ -214,7 +214,7 @@ export class GameEngine {
     host.setSpawnProvider?.((id: number) => this.allocateSpawnForPeer(id))
     for (const [id] of host.peers) {
       if (!this.players.has(id)) {
-        this.addRemotePlayer(id, `Pilot-${id}`, 'telepotu')
+        this.addRemotePlayer(id, `Pilot-${id}`, 'denja')
       }
     }
   }
@@ -230,7 +230,7 @@ export class GameEngine {
 
   onPeerConnected(peerId: number, name?: string, character?: CoreId) {
     if (!this.players.has(peerId)) {
-      this.addRemotePlayer(peerId, name || `Pilot-${peerId}`, character || 'telepotu')
+      this.addRemotePlayer(peerId, name || `Pilot-${peerId}`, character || 'denja')
     }
   }
 
@@ -244,10 +244,11 @@ export class GameEngine {
   addRemotePlayer(id: number, name: string, character: CoreId, spawnOverride?: { x: number; y: number; z: number; yaw?: number }) {
     const spawn = spawnOverride || this.pendingSpawns.get(id) || this.getRandomSpawn()
     this.pendingSpawns.delete(id)
+    const safeCharacter: CoreId = CORE_DETAILS[character as CoreId] ? character : 'denja'
     const player: PlayerState = {
       id,
       name: name || `Pilot-${id}`,
-      character: character || 'telepotu',
+      character: safeCharacter,
       x: spawn.x,
       y: spawn.y,
       z: spawn.z,
@@ -476,23 +477,6 @@ export class GameEngine {
   private applyAbility(player: PlayerState) {
     const now = Date.now()
     switch (player.character) {
-      case 'telepotu': {
-        const enemies = [...this.players.values()].filter(p => {
-          if (!p.alive || p.id === player.id || p.invisible) return false
-          return Math.hypot(p.x - player.x, p.z - player.z) <= 120
-        })
-        if (enemies.length > 0) {
-          const target = enemies[Math.floor(Math.random() * enemies.length)]
-          const tmp = { x: player.x, y: player.y, z: player.z }
-          player.x = target.x; player.y = target.y; player.z = target.z
-          target.x = tmp.x; target.y = tmp.y; target.z = tmp.z
-        }
-        break
-      }
-      case 'chumantr':
-        player.invisible = true
-        player.cloakEnd = now + 10000
-        break
       case 'denja':
         // Overdrive: handled via speed multiplier in tick
         break
@@ -506,85 +490,6 @@ export class GameEngine {
         player.shieldActive = true
         player.shieldEnd = now + 3000
         break
-      case 'surge': {
-        const enemies = [...this.players.values()].filter(p => p.alive && p.id !== player.id && !p.invisible)
-        let nearest: PlayerState | null = null
-        let minDist = 40
-        for (const e of enemies) {
-          const d = Math.hypot(e.x - player.x, e.z - player.z)
-          if (d < minDist) {
-            minDist = d
-            nearest = e
-          }
-        }
-        if (nearest) {
-          const drain = Math.min(30, nearest.health - 1)
-          if (drain > 0) {
-            nearest.health -= drain
-            nearest.lastDamageAt = now
-            player.health = Math.min(CFG.MAX_HEALTH, player.health + Math.min(15, drain))
-          }
-        }
-        break
-      }
-      case 'gambler': {
-        const r = Math.random()
-        if (r < 0.33) {
-          player.health = Math.min(CFG.MAX_HEALTH, player.health + 200)
-        } else if (r < 0.66) {
-          const enemies = [...this.players.values()].filter(p => p.alive && p.id !== player.id)
-          if (enemies.length) {
-            const target = enemies[Math.floor(Math.random() * enemies.length)]
-            player.x = target.x; player.y = target.y; player.z = target.z
-          }
-        } else {
-          this.applyDamage(player.id, player.health, player.id)
-        }
-        break
-      }
-      case 'parasite': {
-        // Leech Burst: 8/s off all strangers within 15u for 6s, kin (other parasites) immune, keeper gains half.
-        let ticks = 0
-        const leech: ReturnType<typeof setInterval> = setInterval(() => {
-          ticks++
-          if (!player.alive || ticks > 6) {
-            clearInterval(leech)
-            this.abilityTimers.delete(leech)
-            return
-          }
-          let drainedTotal = 0
-          for (const e of this.players.values()) {
-            if (e.id === player.id || !e.alive || e.invisible || e.character === 'parasite') continue
-            if (Math.hypot(e.x - player.x, e.z - player.z) > 15) continue
-            const drain = Math.min(8, e.health - 1)
-            if (drain > 0) {
-              e.health -= drain
-              e.lastDamageAt = Date.now()
-              drainedTotal += drain
-            }
-          }
-          if (drainedTotal > 0) {
-            player.health = Math.min(CFG.MAX_HEALTH, player.health + Math.floor(drainedTotal / 2))
-          }
-          if (ticks >= 6) {
-            clearInterval(leech)
-            this.abilityTimers.delete(leech)
-          }
-        }, 1000)
-        this.trackTimer(leech)
-        break
-      }
-      case 'berserker': {
-        // Red Rage: +50% dmg / +25% speed handled via lastAbilityAt window. Burnout crash -50 after 8s.
-        const burnout: ReturnType<typeof setTimeout> = setTimeout(() => {
-          this.abilityTimers.delete(burnout)
-          if (player.alive) {
-            this.applyDamage(player.id, 50, player.id)
-          }
-        }, 8000)
-        this.trackTimer(burnout)
-        break
-      }
     }
   }
 
@@ -649,8 +554,7 @@ export class GameEngine {
     if (hit) {
       const distMult = Math.max(0.25, 1 - hit.t / 160)
       const superMult = shooter.superActive ? CFG.SUPER_MULT : 1
-      const rageMult = shooter.character === 'berserker' && Date.now() - shooter.lastAbilityAt < 8000 ? 1.5 : 1
-      const dmg = CFG.DMG_SINGLE * superMult * rageMult * distMult
+      const dmg = CFG.DMG_SINGLE * superMult * distMult
       this.applyDamage(hit.id, dmg, shooter.id)
     }
   }
@@ -704,7 +608,7 @@ export class GameEngine {
       target.alive = false
       target.respawnAt = Date.now() + CFG.RESPAWN_DELAY
 
-      // Suicides (gambler death-roll, berserker burnout) award no frag.
+      // Suicides award no frag.
       if (shooter && shooter.id !== target.id) {
         shooter.score++
       }
@@ -727,14 +631,6 @@ export class GameEngine {
         sound.stopRecharge()
       } else if (shooter?.id === 1) {
         sound.playKill()
-      }
-
-      // Jinx passive retaliation (60u range, fizzle if killer gone/dead)
-      if (target.character === 'jinx' && shooter && shooter.alive && shooter.id !== target.id) {
-        const dist = Math.hypot(shooter.x - target.x, shooter.z - target.z)
-        if (dist <= 60) {
-          this.applyDamage(shooter.id, 80, target.id)
-        }
       }
 
       if (this.host) {
@@ -923,8 +819,7 @@ export class GameEngine {
             this.scene.spawnProjectile(bot.x, bot.y + 1.2, bot.z, dx / len, dy / len, dz / len, false)
             const hit = raycastPlayers(bot.id, bot.x, bot.y + 1.2, bot.z, dx / len, dy / len, dz / len, targets, this.map, this.nearbyBoxes)
             if (hit) {
-              const rageMult = bot.character === 'berserker' && Date.now() - bot.lastAbilityAt < 8000 ? 1.5 : 1
-              this.applyDamage(hit.id, CFG.DMG_SINGLE * 0.5 * rageMult, bot.id)
+              this.applyDamage(hit.id, CFG.DMG_SINGLE * 0.5, bot.id)
             }
           }
         },
@@ -1197,9 +1092,6 @@ export class GameEngine {
       const rageNow = Date.now()
       if (this.localPlayer.character === 'denja' && rageNow - this.localPlayer.lastAbilityAt < 8000) {
         speed *= 2.0
-      }
-      if (this.localPlayer.character === 'berserker' && rageNow - this.localPlayer.lastAbilityAt < 8000) {
-        speed *= 1.25
       }
       // Jump-pad air boost: extra steering speed while airborne after a launch
       if (rageNow < this.padBoostUntil && !this.isOnGround(this.localPlayer)) {
@@ -1515,9 +1407,6 @@ export class GameEngine {
           if (p.character === 'denja' && rn - p.lastAbilityAt < 8000) {
             speed *= 2.0
           }
-          if (p.character === 'berserker' && rn - p.lastAbilityAt < 8000) {
-            speed *= 1.25
-          }
           mx = (mx / len) * speed * Math.min(Math.max(msg.dt || 0, 0), 0.25)
           mz = (mz / len) * speed * Math.min(Math.max(msg.dt || 0, 0), 0.25)
           const col = resolveCollision(p.x + mx, p.y, p.z + mz, this.map, this.nearbyBoxes)
@@ -1597,12 +1486,13 @@ export class GameEngine {
       })
       this.scene.updatePlayers([...this.players.values()], this.localPlayer.id)
     } else if (msg.type === 'join' && fromId) {
+      const safeCharacter: CoreId = CORE_DETAILS[msg.character as CoreId] ? msg.character : 'denja'
       const p = this.players.get(fromId)
       if (p) {
         p.name = msg.name
-        p.character = msg.character
+        p.character = safeCharacter
       } else {
-        this.addRemotePlayer(fromId, msg.name, msg.character)
+        this.addRemotePlayer(fromId, msg.name, safeCharacter)
       }
     } else if (msg.type === 'super' && fromId && this.players.has(fromId)) {
       const p = this.players.get(fromId)!

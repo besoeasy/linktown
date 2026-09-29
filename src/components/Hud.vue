@@ -54,7 +54,7 @@ onUnmounted(() => {
   if (timerRaf) cancelAnimationFrame(timerRaf)
 })
 
-const core = computed(() => CORE_DETAILS[props.player.character] || CORE_DETAILS.telepotu)
+const core = computed(() => CORE_DETAILS[props.player.character] || CORE_DETAILS.denja)
 
 const hullPercent = computed(() => {
   return Math.max(0, Math.min(100, (props.player.health / CFG.MAX_HEALTH) * 100))

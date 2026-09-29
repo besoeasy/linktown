@@ -53,24 +53,17 @@ export const CHASSIS = {
 } as const
 
 export type CoreId =
-  | 'telepotu'
-  | 'chumantr'
   | 'denja'
   | 'mednix'
   | 'tank'
   | 'anchor'
-  | 'surge'
-  | 'jinx'
-  | 'gambler'
-  | 'parasite'
-  | 'berserker'
 
 export interface CoreInfo {
   id: CoreId
   name: string
   maker: string
   ability: string
-  cooldown: number // ms, -1 for passive
+  cooldown: number // ms
   color: string
   badge: string
   desc: string
@@ -78,28 +71,6 @@ export interface CoreInfo {
 }
 
 export const CORE_DETAILS: Record<CoreId, CoreInfo> = {
-  telepotu: {
-    id: 'telepotu',
-    name: 'Telepotu',
-    maker: 'Vela Relay Compact',
-    ability: 'Warp Logistics',
-    cooldown: 60000,
-    color: '#00f0ff',
-    badge: '⚡',
-    desc: 'Swaps positions with a random alive enemy within 120 units. Fizzles on no target.',
-    lore: 'Escape tool developed for orbital cave-ins and freight ambushes.'
-  },
-  chumantr: {
-    id: 'chumantr',
-    name: 'Chumantr',
-    maker: 'Pale Choir',
-    ability: 'Stealth Cloak',
-    cooldown: 30000,
-    color: '#a855f7',
-    badge: '👻',
-    desc: 'Full ghost for 10s: move only, no shoot or abilities.',
-    lore: 'Survey sneak algorithm designed by cult ghosts for hostile surface scans.'
-  },
   denja: {
     id: 'denja',
     name: 'Denja',
@@ -143,61 +114,6 @@ export const CORE_DETAILS: Record<CoreId, CoreInfo> = {
     badge: '⚓',
     desc: 'Deploys a pre-charged cell for 3s of full immunity with 0 Hull cost.',
     lore: 'Standard military guard cell designed for breaching hot drop zones.'
-  },
-  surge: {
-    id: 'surge',
-    name: 'Surge',
-    maker: 'Deep Vein Mining Guild',
-    ability: 'Siphon Field',
-    cooldown: 25000,
-    color: '#eab308',
-    badge: '🌀',
-    desc: 'Rips 30 Hull off nearest enemy in 40u, keeps 15. Fizzles on no target.',
-    lore: 'Adapted from magnetic slag extractors used in deep core mining.'
-  },
-  jinx: {
-    id: 'jinx',
-    name: 'Jinx',
-    maker: 'Black Lotus AI Lab',
-    ability: 'Death Curse',
-    cooldown: -1,
-    color: '#ec4899',
-    badge: '💀',
-    desc: 'Passive: killer within 60u takes 80 Hull on your death.',
-    lore: 'Black-box retaliation firmware with copied consciousness mind-loop.'
-  },
-  gambler: {
-    id: 'gambler',
-    name: 'Gambler',
-    maker: 'Vesper Casino-State',
-    ability: 'Desperate Odds',
-    cooldown: 45000,
-    color: '#f59e0b',
-    badge: '🎲',
-    desc: 'Rolls the dice: 1/3 heal +200 Hull, 1/3 teleport onto enemy, 1/3 instant death.',
-    lore: 'High-variance algorithmic betting core favored by outer rim thrill-seekers.'
-  },
-  parasite: {
-    id: 'parasite',
-    name: 'Parasite',
-    maker: 'Green Hive',
-    ability: 'Leech Burst',
-    cooldown: 30000,
-    color: '#84cc16',
-    badge: '🧫',
-    desc: 'Drains 8/s off strangers in 15u for 6s, keeps half. Parasite kin immune.',
-    lore: 'Ecological swarm leech that consumes alien nanite alloys on contact.'
-  },
-  berserker: {
-    id: 'berserker',
-    name: 'Berserker',
-    maker: 'Red Pit Fighters',
-    ability: 'Red Rage',
-    cooldown: 35000,
-    color: '#ef4444',
-    badge: '🔴',
-    desc: '+50% damage and +25% speed 8s, then burnout -50 Hull.',
-    lore: 'Chemical overclock for chassis while pilot neural link stays cool.'
   },
 }
 

@@ -30,10 +30,12 @@ function sanitize(raw: any): PublicRoom | null {
   const code = typeof raw.code === 'string' ? raw.code.trim().toUpperCase() : ''
   if (!/^[0-9A-Z]{4}$/.test(code)) return null
   const players = Math.max(1, Math.min(16, Math.floor(Number(raw.players) || 1)))
+  const allowedCores = ['denja', 'mednix', 'tank', 'anchor'] as const
+  const core = allowedCores.includes(raw.core as any) ? (raw.core as PublicRoom['core']) : 'denja'
   return {
     code,
     name: typeof raw.name === 'string' ? raw.name.slice(0, 40) : `${code} trial`,
-    core: typeof raw.core === 'string' ? raw.core as CoreId : 'telepotu',
+    core,
     players,
     maxPlayers: 16,
     updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : Date.now()

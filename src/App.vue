@@ -21,7 +21,7 @@ import { LanSignaler } from './net/lan'
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 const inLobby = ref(true)
 const callsign = ref(localStorage.getItem('ltown_callsign') || 'Pilot-' + Math.floor(100 + Math.random() * 900))
-const selectedCore = ref<CoreId>('telepotu')
+const selectedCore = ref<CoreId>('denja')
 
 // Unified PeerJS Room State
 const currentRoomCode = ref('')
