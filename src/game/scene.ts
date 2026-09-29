@@ -82,6 +82,253 @@ function createBumpTexture(source: THREE.CanvasTexture): THREE.CanvasTexture {
   return bump
 }
 
+/** Deterministic PRNG so map dressing is identical for every client. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0
+  return () => {
+    a |= 0
+    a = (a + 0x6d2b79f5) | 0
+    let t = Math.imul(a ^ (a >>> 15), 1 | a)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+/**
+ * Macro ground albedo (1024px, 1:1 world-mapped, no tiling).
+ * Bakes biome blends, central urban plaza, avenue asphalt strips, dirt
+ * blotches, cracks and faint nanite seams into one canvas so the ground
+ * reads designed from orbit instead of a two-color gradient.
+ * World extent = SIZE+80 meters, centered on origin.
+ */
+function createGroundAlbedo(sizeMeters: number): THREE.CanvasTexture {
+  const S = 1024
+  const canvas = document.createElement('canvas')
+  canvas.width = S
+  canvas.height = S
+  const ctx = canvas.getContext('2d')!
+  const rnd = mulberry32(3049)
+  const w2p = (wx: number) => ((wx / sizeMeters) + 0.5) * S // world -> pixel
+
+  // Base: west sandstone -> east grass, vertical gradient in canvas space.
+  const base = ctx.createLinearGradient(0, 0, S, 0)
+  base.addColorStop(0, '#a0845c')
+  base.addColorStop(0.38, '#8a7a52')
+  base.addColorStop(0.5, '#6f7a4a')
+  base.addColorStop(0.62, '#5d7a3e')
+  base.addColorStop(1, '#4a6e34')
+  ctx.fillStyle = base
+  ctx.fillRect(0, 0, S, S)
+
+  // Large soft biome mottling (both sides) so the blend isn't a clean ramp.
+  for (let i = 0; i < 260; i++) {
+    const x = rnd() * S, y = rnd() * S, r = 20 + rnd() * 90
+    const east = x / S > 0.5
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r)
+    const c = east
+      ? (rnd() < 0.5 ? '74,110,52' : '96,120,58')
+      : (rnd() < 0.5 ? '150,120,84' : '122,104,70')
+    g.addColorStop(0, `rgba(${c},0.20)`)
+    g.addColorStop(1, `rgba(${c},0)`)
+    ctx.fillStyle = g
+    ctx.beginPath()
+    ctx.arc(x, y, r, 0, Math.PI * 2)
+    ctx.fill()
+  }
+
+  // Dirt / wear blotches everywhere (darkens, breaks tiling feel).
+  for (let i = 0; i < 420; i++) {
+    const x = rnd() * S, y = rnd() * S, r = 4 + rnd() * 26
+    ctx.fillStyle = `rgba(46,36,24,${0.04 + rnd() * 0.10})`
+    ctx.beginPath()
+    ctx.ellipse(x, y, r, r * (0.4 + rnd() * 0.6), rnd() * Math.PI, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  // Dry-grass / pale-stone speckles (lightens).
+  for (let i = 0; i < 300; i++) {
+    const x = rnd() * S, y = rnd() * S, r = 3 + rnd() * 14
+    ctx.fillStyle = `rgba(210,200,160,${0.03 + rnd() * 0.07})`
+    ctx.beginPath()
+    ctx.ellipse(x, y, r, r * 0.7, rnd() * Math.PI, 0, Math.PI * 2)
+    ctx.fill()
+  }
+
+  // Central urban plaza: weathered concrete slab around the hub.
+  const plazaHalf = w2p(30) - w2p(0)
+  const pcx = S / 2, pcy = S / 2
+  ctx.fillStyle = '#8d949c'
+  ctx.fillRect(pcx - plazaHalf, pcy - plazaHalf, plazaHalf * 2, plazaHalf * 2)
+  // Plaza paver grid.
+  ctx.strokeStyle = 'rgba(30,34,40,0.35)'
+  ctx.lineWidth = 2
+  const step = (plazaHalf * 2) / 12
+  for (let i = 0; i <= 12; i++) {
+    ctx.beginPath(); ctx.moveTo(pcx - plazaHalf + i * step, pcy - plazaHalf); ctx.lineTo(pcx - plazaHalf + i * step, pcy + plazaHalf); ctx.stroke()
+    ctx.beginPath(); ctx.moveTo(pcx - plazaHalf, pcy - plazaHalf + i * step); ctx.lineTo(pcx + plazaHalf, pcy - plazaHalf + i * step); ctx.stroke()
+  }
+  // Plaza stains + edge vignette.
+  for (let i = 0; i < 90; i++) {
+    const x = pcx + (rnd() - 0.5) * plazaHalf * 2
+    const y = pcy + (rnd() - 0.5) * plazaHalf * 2
+    const r = 4 + rnd() * 22
+    ctx.fillStyle = `rgba(40,44,50,${0.05 + rnd() * 0.10})`
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill()
+  }
+  ctx.strokeStyle = 'rgba(25,28,34,0.55)'
+  ctx.lineWidth = 6
+  ctx.strokeRect(pcx - plazaHalf, pcy - plazaHalf, plazaHalf * 2, plazaHalf * 2)
+
+  // Avenue asphalt strips (N/S at x=0, width ~7m).
+  const aveHalf = (7 / sizeMeters) * S / 2
+  ctx.fillStyle = '#33373e'
+  ctx.fillRect(pcx - aveHalf, 0, aveHalf * 2, S)
+  // Asphalt noise + tire-wear bands.
+  for (let i = 0; i < 500; i++) {
+    const x = pcx + (rnd() - 0.5) * aveHalf * 2
+    const y = rnd() * S
+    ctx.fillStyle = rnd() < 0.5 ? `rgba(0,0,0,${0.05 + rnd() * 0.12})` : `rgba(200,205,212,${0.03 + rnd() * 0.06})`
+    ctx.fillRect(x, y, 2 + rnd() * 5, 2 + rnd() * 9)
+  }
+  for (const off of [-aveHalf * 0.45, aveHalf * 0.45]) {
+    ctx.fillStyle = 'rgba(12,13,16,0.35)'
+    ctx.fillRect(pcx + off - 3, 0, 6, S)
+  }
+  // Avenue edge lines (worn cyan conduit paint).
+  ctx.fillStyle = 'rgba(0,220,230,0.5)'
+  ctx.fillRect(pcx - aveHalf - 1, 0, 2, S)
+  ctx.fillRect(pcx + aveHalf - 1, 0, 2, S)
+
+  // Cracks: thin dark polylines wandering across dirt/grass.
+  ctx.strokeStyle = 'rgba(28,22,16,0.5)'
+  for (let i = 0; i < 46; i++) {
+    let x = rnd() * S, y = rnd() * S
+    // Keep cracks off the plaza + avenue.
+    if (Math.abs(x - pcx) < plazaHalf + 8 && Math.abs(y - pcy) < plazaHalf + 8) continue
+    ctx.lineWidth = 1 + rnd() * 1.5
+    ctx.beginPath()
+    ctx.moveTo(x, y)
+    const segs = 3 + Math.floor(rnd() * 5)
+    let ang = rnd() * Math.PI * 2
+    for (let s = 0; s < segs; s++) {
+      ang += (rnd() - 0.5) * 1.2
+      const len = 8 + rnd() * 26
+      x += Math.cos(ang) * len
+      y += Math.sin(ang) * len
+      ctx.lineTo(x, y)
+    }
+    ctx.stroke()
+  }
+
+  // Faint nanite seams: large hex-grid hint, very low alpha.
+  ctx.strokeStyle = 'rgba(0,240,255,0.05)'
+  ctx.lineWidth = 2
+  const hexR = 64
+  const hexW = Math.sqrt(3) * hexR
+  const hexH = 2 * hexR * 0.75
+  for (let y = -hexR; y < S + hexR; y += hexH) {
+    const row = Math.round(y / hexH)
+    const offX = row % 2 === 0 ? 0 : hexW / 2
+    for (let x = -hexW + offX; x < S + hexW; x += hexW) {
+      ctx.beginPath()
+      for (let a = 0; a < 6; a++) {
+        const ang = (Math.PI / 180) * (60 * a - 30)
+        const hx = x + hexR * Math.cos(ang)
+        const hy = y + hexR * Math.sin(ang)
+        if (a === 0) ctx.moveTo(hx, hy)
+        else ctx.lineTo(hx, hy)
+      }
+      ctx.closePath()
+      ctx.stroke()
+    }
+  }
+
+  // Per-pixel grain so close-ups never look airbrushed.
+  const img = ctx.getImageData(0, 0, S, S)
+  const dd = img.data
+  for (let i = 0; i < dd.length; i += 4) {
+    const n = (rnd() - 0.5) * 22
+    dd[i] = Math.max(0, Math.min(255, dd[i] + n))
+    dd[i + 1] = Math.max(0, Math.min(255, dd[i + 1] + n))
+    dd[i + 2] = Math.max(0, Math.min(255, dd[i + 2] + n))
+  }
+  ctx.putImageData(img, 0, 0)
+
+  const tex = new THREE.CanvasTexture(canvas)
+  tex.colorSpace = THREE.SRGBColorSpace
+  tex.anisotropy = 8
+  return tex
+}
+
+/**
+ * Macro roughness to match the albedo: smooth avenue/plaza (reflective when
+ * wet-lit), rough dirt/grass. Mid-gray base keeps the daylight read intact.
+ */
+function createGroundRoughness(sizeMeters: number): THREE.CanvasTexture {
+  const S = 256
+  const canvas = document.createElement('canvas')
+  canvas.width = S
+  canvas.height = S
+  const ctx = canvas.getContext('2d')!
+  const rnd = mulberry32(777)
+  const w2p = (wx: number) => ((wx / sizeMeters) + 0.5) * S
+
+  ctx.fillStyle = '#e6e6e6' // rough dirt/grass
+  ctx.fillRect(0, 0, S, S)
+  // Smoother patches (darker = smoother): worn areas + damp hollows.
+  for (let i = 0; i < 160; i++) {
+    const x = rnd() * S, y = rnd() * S, r = 4 + rnd() * 22
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r)
+    g.addColorStop(0, `rgba(120,120,120,${0.25 + rnd() * 0.3})`)
+    g.addColorStop(1, 'rgba(120,120,120,0)')
+    ctx.fillStyle = g
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill()
+  }
+  // Plaza + avenue read smoother (polished concrete / asphalt).
+  const plazaHalf = w2p(30) - w2p(0)
+  ctx.fillStyle = 'rgba(150,150,150,0.85)'
+  ctx.fillRect(S / 2 - plazaHalf, S / 2 - plazaHalf, plazaHalf * 2, plazaHalf * 2)
+  const aveHalf = (7 / sizeMeters) * S / 2
+  ctx.fillStyle = 'rgba(140,140,140,0.9)'
+  ctx.fillRect(S / 2 - aveHalf, 0, aveHalf * 2, S)
+
+  const tex = new THREE.CanvasTexture(canvas)
+  return tex
+}
+
+/** Soft radial blob used for grounding contact shadows under structures. */
+function createContactShadowTexture(): THREE.CanvasTexture {
+  const S = 128
+  const canvas = document.createElement('canvas')
+  canvas.width = S
+  canvas.height = S
+  const ctx = canvas.getContext('2d')!
+  const g = ctx.createRadialGradient(S / 2, S / 2, 4, S / 2, S / 2, S / 2)
+  g.addColorStop(0, 'rgba(0,0,0,0.85)')
+  g.addColorStop(0.55, 'rgba(0,0,0,0.38)')
+  g.addColorStop(1, 'rgba(0,0,0,0)')
+  ctx.fillStyle = g
+  ctx.fillRect(0, 0, S, S)
+  const tex = new THREE.CanvasTexture(canvas)
+  return tex
+}
+
+/**
+ * Bake a UV tiling factor into a cloned unit-box geometry.
+ * Instanced boxes share one geometry per material, so a 46 m wall and a
+ * 2 m crate otherwise stretch the same texture. Bucketing instances into
+ * 1x / 4x / 10x tiled geometries keeps texel density roughly constant
+ * across scales — the single biggest texture-quality win on this map.
+ */
+function tiledUnitBox(tiles: number): THREE.BoxGeometry {
+  const geo = new THREE.BoxGeometry(1, 1, 1)
+  const uv = geo.attributes.uv as THREE.BufferAttribute
+  for (let i = 0; i < uv.count; i++) {
+    uv.setXY(i, uv.getX(i) * tiles, uv.getY(i) * tiles)
+  }
+  uv.needsUpdate = true
+  return geo
+}
+
 /** Procedural grayscale hexagonal nanite mesh + granular soil micro-texture for ground plane */
 function createTerrainDetailTexture(): THREE.CanvasTexture {
   const canvas = document.createElement('canvas')
@@ -219,6 +466,40 @@ function createSciFiPanelTexture(opts: {
         }
       }
     }
+  }
+
+  // Wear pass: grime settled into panel bottoms, rain streaks from top
+  // seams, and pale edge-wear scratches so walls never read as clean plastic.
+  for (let i = 0; i < 130; i++) {
+    const gx = Math.random() * 512
+    const gy = 300 + Math.random() * 212
+    const gr = 3 + Math.random() * 16
+    ctx.fillStyle = `rgba(12,14,18,${0.04 + Math.random() * 0.10})`
+    ctx.beginPath()
+    ctx.ellipse(gx, gy, gr, gr * (0.5 + Math.random()), Math.random() * 3, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  for (let i = 0; i < 40; i++) {
+    const sx = Math.random() * 512
+    const sy = Math.random() * 180
+    const len = 30 + Math.random() * 120
+    ctx.strokeStyle = `rgba(10,12,16,${0.05 + Math.random() * 0.08})`
+    ctx.lineWidth = 1 + Math.random() * 2
+    ctx.beginPath()
+    ctx.moveTo(sx, sy)
+    ctx.lineTo(sx + (Math.random() - 0.5) * 8, sy + len)
+    ctx.stroke()
+  }
+  ctx.strokeStyle = 'rgba(255,255,255,0.10)'
+  ctx.lineWidth = 1.5
+  for (let i = 0; i < 26; i++) {
+    const sx = Math.random() * 512
+    const sy = Math.random() * 512
+    const len = 8 + Math.random() * 30
+    ctx.beginPath()
+    ctx.moveTo(sx, sy)
+    ctx.lineTo(sx + len, sy + (Math.random() - 0.5) * 6)
+    ctx.stroke()
   }
 
   if (opts.hazardBottom) {
@@ -458,6 +739,45 @@ function createRoadAsphaltTexture(): THREE.CanvasTexture {
     for (let gy = 0; gy < 512; gy += 16) {
       ctx.fillRect(cx - 9, gy, 18, 3)
     }
+  }
+
+  // Tire-wear bands: two dark polished tracks per lane + oil drips.
+  for (const tx of [150, 210, 302, 362]) {
+    const tg = ctx.createLinearGradient(tx - 26, 0, tx + 26, 0)
+    tg.addColorStop(0, 'rgba(8,9,12,0)')
+    tg.addColorStop(0.5, 'rgba(8,9,12,0.42)')
+    tg.addColorStop(1, 'rgba(8,9,12,0)')
+    ctx.fillStyle = tg
+    ctx.fillRect(tx - 26, 0, 52, 512)
+  }
+  for (let i = 0; i < 26; i++) {
+    const ox = 60 + Math.random() * 392
+    const oy = Math.random() * 512
+    const or = 3 + Math.random() * 12
+    ctx.fillStyle = `rgba(5,6,8,${0.25 + Math.random() * 0.3})`
+    ctx.beginPath()
+    ctx.ellipse(ox, oy, or, or * 0.6, Math.random() * 3, 0, Math.PI * 2)
+    ctx.fill()
+    // faint rainbow sheen on the freshest spills
+    if (i % 4 === 0) {
+      ctx.strokeStyle = 'rgba(150,120,220,0.18)'
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.ellipse(ox, oy, or + 3, or * 0.6 + 2, 0, 0, Math.PI * 2)
+      ctx.stroke()
+    }
+  }
+  // Pothole patches: darker rectangles with tar seams.
+  for (let i = 0; i < 7; i++) {
+    const px = 60 + Math.random() * 340
+    const py = Math.random() * 460
+    const pw = 40 + Math.random() * 60
+    const ph = 24 + Math.random() * 30
+    ctx.fillStyle = 'rgba(16,18,22,0.55)'
+    ctx.fillRect(px, py, pw, ph)
+    ctx.strokeStyle = 'rgba(5,6,8,0.8)'
+    ctx.lineWidth = 3
+    ctx.strokeRect(px, py, pw, ph)
   }
 
   const curbW = 32
@@ -1515,55 +1835,65 @@ export class SceneRenderer {
 
   buildMapGeometry(map: MapData) {
     const SIZE = map.floor.w
-
-    // 1. Biome Ground Plane (Vertex-colored + rolling terrain displacement;
-    //    rotation baked in so vertices are already world-aligned XZ)
-    const gGeo = new THREE.PlaneGeometry(SIZE + 80, SIZE + 80, 150, 150)
-    gGeo.rotateX(-Math.PI / 2)
-    const gColors: number[] = []
-    const pos = gGeo.attributes.position
-    for (let i = 0; i < pos.count; i++) {
-      const wx = pos.getX(i)
-      const wz = pos.getZ(i)
-      const gh = groundHeight(wx, wz, map.seed)
-      pos.setY(i, gh)
-      const n = (Math.sin(wx * 0.06 + wz * 0.11) * 0.5 +
-                 Math.sin(wx * 0.17 - wz * 0.09) * 0.25 +
-                 Math.sin(wx * 0.04 + wz * 0.04) * 0.14) * 0.042
-      const t = Math.max(0, Math.min(1, (wx + 100) / 200))
-      // Terra (+x): vibrant grass green
-      const tr = 0.28 + n, tg = 0.52 + n * 0.6, tb = 0.20 + n * 0.5
-      // Barren (-x): warm sandstone
-      const br = 0.70 + n, bg = 0.60 + n * 0.4, bb = 0.38 + n * 0.3
-      // Rocky tint on hilltops, darker soil in hollows
-      const rock = Math.max(0, Math.min(1, (gh - 1.2) / 2))
-      const shade = 1 + Math.max(-0.12, Math.min(0.06, gh * -0.04))
-      const r = (tr * t + br * (1 - t)) * (1 - rock * 0.25) * shade + rock * 0.18
-      const g = (tg * t + bg * (1 - t)) * (1 - rock * 0.28) * shade + rock * 0.16
-      const b = (tb * t + bb * (1 - t)) * (1 - rock * 0.25) * shade + rock * 0.15
-      gColors.push(r, g, b)
-    }
-    gGeo.setAttribute('color', new THREE.Float32BufferAttribute(gColors, 3))
-    gGeo.computeVertexNormals()
-
-    // High-resolution nanite lattice detail multiplied over biome vertex colors.
-    // The grayscale field also drives a restrained bump response for close-up relief.
-    const groundDetailTex = createTerrainDetailTexture()
-    const groundBumpTex = createBumpTexture(groundDetailTex)
+    const EXTENT = SIZE + 80 // ground plane spans the arena + horizon skirt
     const maxAnisotropy = Math.min(8, (this.renderer as any).capabilities?.getMaxAnisotropy?.() ?? 4)
-    groundDetailTex.anisotropy = maxAnisotropy
-    groundBumpTex.anisotropy = maxAnisotropy
+
+    // 1. Layered ground: macro albedo (world-mapped, 1:1) + roughness zones
+    //    + tiled micro-grain overlay. Two layers because one 1024 canvas
+    //    covers 380 m (~0.37 m/px): macro design from orbit, micro relief
+    //    for boots-on-ground close-ups. Mesh stays perfectly flat (y=0) so
+    //    physics, bots and hitscan remain exact — all relief is shading.
+    const gGeo = new THREE.PlaneGeometry(EXTENT, EXTENT, 128, 128)
+    gGeo.rotateX(-Math.PI / 2)
+    {
+      const pos = gGeo.attributes.position
+      for (let i = 0; i < pos.count; i++) {
+        pos.setY(i, groundHeight(pos.getX(i), pos.getZ(i), map.seed))
+      }
+      gGeo.computeVertexNormals()
+    }
+    const groundAlbedo = createGroundAlbedo(EXTENT)
+    groundAlbedo.anisotropy = maxAnisotropy
+    const groundRough = createGroundRoughness(EXTENT)
+    const groundBump = createBumpTexture(groundAlbedo)
+    groundBump.anisotropy = maxAnisotropy
     const groundMat = new THREE.MeshStandardMaterial({
-      vertexColors: true,
-      map: groundDetailTex,
-      bumpMap: groundBumpTex,
-      bumpScale: 0.12,
-      roughness: 0.90,
-      metalness: 0.04
+      map: groundAlbedo,
+      roughnessMap: groundRough,
+      roughness: 1.0,
+      bumpMap: groundBump,
+      bumpScale: 0.35,
+      metalness: 0.05,
+      envMapIntensity: 0.5
     })
     const ground = new THREE.Mesh(gGeo, groundMat)
     ground.receiveShadow = true
     this.scene.add(ground)
+
+    // Micro-grain overlay: tiled nanite lattice + soil stipple floating
+    // 2 cm above the macro layer. Transparent multiply-ish veil (normal
+    // blending, mid-gray) so close-ups keep texture instead of blur.
+    const microTex = createTerrainDetailTexture()
+    microTex.repeat.set(110, 110)
+    microTex.anisotropy = maxAnisotropy
+    const microBump = createBumpTexture(microTex)
+    const microMat = new THREE.MeshStandardMaterial({
+      map: microTex,
+      bumpMap: microBump,
+      bumpScale: 0.08,
+      transparent: true,
+      opacity: 0.42,
+      roughness: 0.95,
+      metalness: 0.0,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -2
+    })
+    const micro = new THREE.Mesh(new THREE.PlaneGeometry(EXTENT, EXTENT), microMat)
+    micro.rotation.x = -Math.PI / 2
+    micro.position.y = 0.02
+    micro.receiveShadow = true
+    this.scene.add(micro)
 
     // 2. Animated water ponds with engineered containment rims & corner beacons
     this.waterTexture = createWaterTexture()
@@ -1771,36 +2101,181 @@ export class SceneRenderer {
       arr.push(b)
     }
 
-    const unitBox = new THREE.BoxGeometry(1, 1, 1)
+    // UV-bucketed instancing: one shared geometry per tiling factor so a
+    // 46 m wall and a 2 m crate keep roughly constant texel density.
+    const boxGeos = [tiledUnitBox(1), tiledUnitBox(4), tiledUnitBox(10)]
+    const bucketOf = (b: Box) => {
+      const m = Math.max(b.w, b.h, b.d)
+      return m <= 4.5 ? 0 : m <= 13 ? 1 : 2
+    }
     const dummy = new THREE.Object3D()
     const instanceTint = new THREE.Color()
 
     for (const [type, list] of groups) {
-      const mat = materials[type]
-      const count = list.length
-      const inst = new THREE.InstancedMesh(unitBox, mat, count)
-      inst.castShadow = true
-      inst.receiveShadow = true
+      const mat = materials[type] as THREE.MeshStandardMaterial
+      // Roughness variation from the same bump field: panels read less
+      // uniform under the sun without authoring new textures.
+      const bumpKey = (mat as any).bumpMap as THREE.Texture | undefined
+      if (bumpKey && !(mat as any).roughnessMap) {
+        ;(mat as any).roughnessMap = bumpKey
+        mat.roughness = 1.0
+      }
+      // Split this material's boxes across the 3 tiling buckets.
+      const buckets: Box[][] = [[], [], []]
+      for (const b of list) buckets[bucketOf(b)].push(b)
+      buckets.forEach((blist, bi) => {
+        if (blist.length === 0) return
+        const inst = new THREE.InstancedMesh(boxGeos[bi], mat, blist.length)
+        inst.castShadow = true
+        inst.receiveShadow = true
+        for (let i = 0; i < blist.length; i++) {
+          const b = blist[i]
+          dummy.position.set(b.x, b.y, b.z)
+          dummy.scale.set(b.w, b.h, b.d)
+          dummy.rotation.set(0, 0, 0)
+          dummy.updateMatrix()
+          inst.setMatrixAt(i, dummy.matrix)
 
-      for (let i = 0; i < count; i++) {
-        const b = list[i]
-        dummy.position.set(b.x, b.y, b.z)
-        dummy.scale.set(b.w, b.h, b.d)
+          // Tiny deterministic tonal shifts break up repeated modules without
+          // changing the authored biome palette.
+          const seed = Math.abs(Math.round((b.x + 23.7) * 19 + (b.z - 11.2) * 31 + b.h * 7))
+          const value = 0.88 + (seed % 9) * 0.017
+          const warmth = ((seed % 7) - 3) * 0.006
+          instanceTint.setRGB(value + warmth, value, value - warmth * 0.55)
+          inst.setColorAt(i, instanceTint)
+        }
+        inst.instanceMatrix.needsUpdate = true
+        if (inst.instanceColor) inst.instanceColor.needsUpdate = true
+        this.scene.add(inst)
+      })
+    }
+
+    // 3b. Contact shadows: soft dark blobs under grounded structures.
+    // Sells weight where the single sun shadow map stays soft — pure AAA
+    // grounding trick, one instanced draw call, zero gameplay effect.
+    {
+      const shadowTex = createContactShadowTexture()
+      const footprints: { x: number; z: number; w: number; d: number }[] = []
+      for (const b of map.boxes) {
+        if (b.h < 1 || b.y - b.h / 2 > 0.6) continue // airborne decks/rails
+        if (b.type === 'road_marking' || b.type === 'path') continue
+        footprints.push({ x: b.x, z: b.z, w: b.w, d: b.d })
+      }
+      const shadowGeo = new THREE.PlaneGeometry(1, 1)
+      shadowGeo.rotateX(-Math.PI / 2)
+      const shadowMat = new THREE.MeshBasicMaterial({
+        map: shadowTex,
+        transparent: true,
+        opacity: 0.5,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -1
+      })
+      const shadows = new THREE.InstancedMesh(shadowGeo, shadowMat, Math.max(1, footprints.length))
+      footprints.forEach((f, i) => {
+        dummy.position.set(f.x, 0.035, f.z)
+        dummy.scale.set(f.w * 1.25 + 1.2, 1, f.d * 1.25 + 1.2)
         dummy.rotation.set(0, 0, 0)
         dummy.updateMatrix()
-        inst.setMatrixAt(i, dummy.matrix)
+        shadows.setMatrixAt(i, dummy.matrix)
+      })
+      shadows.instanceMatrix.needsUpdate = true
+      shadows.renderOrder = 1
+      this.scene.add(shadows)
+    }
 
-        // Tiny deterministic tonal shifts break up repeated modules without
-        // changing the authored biome palette.
-        const seed = Math.abs(Math.round((b.x + 23.7) * 19 + (b.z - 11.2) * 31 + b.h * 7))
-        const value = 0.88 + (seed % 9) * 0.017
-        const warmth = ((seed % 7) - 3) * 0.006
-        instanceTint.setRGB(value + warmth, value, value - warmth * 0.55)
-        inst.setColorAt(i, instanceTint)
+    // 3c. Ground scatter (visual only, no collision): barren rock fields
+    // west, grass tufts east, concrete debris around the plaza. Deterministic
+    // seed => identical on every client. Rejected near buildings, avenues,
+    // ponds, spawns and jump-pad nodes so lanes stay readable.
+    {
+      const rnd = mulberry32(map.seed)
+      const blocked = (x: number, z: number, r: number): boolean => {
+        if (Math.abs(x) < 5.5 && Math.abs(z) < 88) return true // N/S avenue
+        for (const b of map.boxes) {
+          if (Math.abs(x - b.x) < b.w / 2 + r && Math.abs(z - b.z) < b.d / 2 + r && b.h > 0.5) return true
+        }
+        for (const s of map.spawns) {
+          if (Math.hypot(x - s.x, z - s.z) < 3 + r) return true
+        }
+        // Ponds + fountain plaza keep clear
+        const ponds = [[80, -75, 20, 14], [10, -88, 12, 9], [90, 45, 15, 11], [70, 80, 13, 10], [-20, 30, 8, 6], [40, -40, 10, 8]]
+        for (const [px, pz, pw, pd] of ponds) {
+          if (Math.abs(x - px) < pw + r && Math.abs(z - pz) < pd + r) return true
+        }
+        return false
       }
-      inst.instanceMatrix.needsUpdate = true
-      if (inst.instanceColor) inst.instanceColor.needsUpdate = true
-      this.scene.add(inst)
+      const HALF = SIZE / 2 - 6
+
+      // Rocks (barren west + mesa skirts)
+      const rockGeo = new THREE.DodecahedronGeometry(0.4, 0)
+      const rockMat = new THREE.MeshStandardMaterial({ color: 0x8a7a63, roughness: 0.95, metalness: 0.02, flatShading: true })
+      const rocks: THREE.Matrix4[] = []
+      for (let i = 0; i < 900 && rocks.length < 230; i++) {
+        const x = -rnd() * HALF - 4
+        const z = (rnd() - 0.5) * 2 * HALF
+        if (blocked(x, z, 0.7)) continue
+        const s = 0.35 + rnd() * 1.15
+        dummy.position.set(x, s * 0.18, z)
+        dummy.scale.set(s * (0.7 + rnd() * 0.7), s * (0.5 + rnd() * 0.5), s * (0.7 + rnd() * 0.7))
+        dummy.rotation.set(rnd() * 0.4, rnd() * Math.PI * 2, rnd() * 0.4)
+        dummy.updateMatrix()
+        rocks.push(dummy.matrix.clone())
+      }
+      const rockInst = new THREE.InstancedMesh(rockGeo, rockMat, Math.max(1, rocks.length))
+      rocks.forEach((m, i) => rockInst.setMatrixAt(i, m))
+      rockInst.instanceMatrix.needsUpdate = true
+      rockInst.castShadow = true
+      rockInst.receiveShadow = true
+      this.scene.add(rockInst)
+
+      // Grass tufts (terra east): cheap crossed-cone clumps, wind-static.
+      const tuftGeo = new THREE.ConeGeometry(0.32, 0.85, 5)
+      const tuftMat = new THREE.MeshStandardMaterial({ color: 0x4d7a35, roughness: 0.9, metalness: 0.0, flatShading: true })
+      const tufts: THREE.Matrix4[] = []
+      for (let i = 0; i < 1400 && tufts.length < 380; i++) {
+        const x = rnd() * HALF + 4
+        const z = (rnd() - 0.5) * 2 * HALF
+        if (Math.abs(x) < 32 && Math.abs(z) < 32) continue // keep plaza clean
+        if (blocked(x, z, 0.5)) continue
+        const s = 0.6 + rnd() * 1.1
+        dummy.position.set(x, 0.32 * s, z)
+        dummy.scale.set(s, s * (0.8 + rnd() * 0.5), s)
+        dummy.rotation.set((rnd() - 0.5) * 0.25, rnd() * Math.PI * 2, (rnd() - 0.5) * 0.25)
+        dummy.updateMatrix()
+        tufts.push(dummy.matrix.clone())
+      }
+      const tuftInst = new THREE.InstancedMesh(tuftGeo, tuftMat, Math.max(1, tufts.length))
+      tufts.forEach((m, i) => tuftInst.setMatrixAt(i, m))
+      tuftInst.instanceMatrix.needsUpdate = true
+      tuftInst.castShadow = false
+      tuftInst.receiveShadow = true
+      this.scene.add(tuftInst)
+
+      // Concrete debris near the hub + gates: broken slabs suggesting a
+      // decommissioned transit hub rather than a fresh parking lot.
+      const debGeo = new THREE.BoxGeometry(0.7, 0.22, 0.5)
+      const debMat = new THREE.MeshStandardMaterial({ color: 0x6b7280, roughness: 0.9, metalness: 0.05 })
+      const debs: THREE.Matrix4[] = []
+      const clusters = [[0, 34], [0, -34], [34, 0], [-34, 0], [0, 80], [0, -80], [80, 0], [-80, 0]]
+      for (const [cx, cz] of clusters) {
+        for (let i = 0; i < 14; i++) {
+          const x = cx + (rnd() - 0.5) * 22
+          const z = cz + (rnd() - 0.5) * 22
+          if (blocked(x, z, 0.4)) continue
+          dummy.position.set(x, 0.1, z)
+          dummy.scale.set(0.5 + rnd() * 1.4, 0.6 + rnd() * 0.8, 0.5 + rnd() * 1.2)
+          dummy.rotation.set(0, rnd() * Math.PI * 2, 0)
+          dummy.updateMatrix()
+          debs.push(dummy.matrix.clone())
+        }
+      }
+      const debInst = new THREE.InstancedMesh(debGeo, debMat, Math.max(1, debs.length))
+      debs.forEach((m, i) => debInst.setMatrixAt(i, m))
+      debInst.instanceMatrix.needsUpdate = true
+      debInst.castShadow = true
+      debInst.receiveShadow = true
+      this.scene.add(debInst)
     }
 
     // 4. Central Meridian Hub Holographic Billboards (Lore: Season 3049 Broadcast & Makers)
