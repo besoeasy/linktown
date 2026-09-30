@@ -1,11 +1,22 @@
 // 3049 Remote Age — Canon specifications from lore.md & commit e392b58b6b4981ece32cff242cbda5a07fceb0f4
+import { MAP_SIZE } from './map'
+
+// Movement scales linearly with arena size so full-map traversal time stays
+// constant (~20s edge-to-edge at run speed). Reference tuning was done at
+// 300x300 (15 u/s run, 9 u/s walk); changing MAP_SIZE in map.ts rescales both.
+const REFERENCE_MAP_SIZE = 300
+const REFERENCE_RUN_SPEED = 15   // units/sec sprint at reference size
+const REFERENCE_WALK_SPEED = 9   // units/sec base walk at reference size
+const speedScale = MAP_SIZE / REFERENCE_MAP_SIZE
+const round1 = (n: number) => Math.round(n * 10) / 10
+
 export const CFG = {
   TICK_MS: 50,              // 20 Hz simulation
   MATCH_DURATION: 600,      // 10 minutes (seconds)
   MAX_PLAYERS: 16,          // WebRTC P2P mesh room limit
   VIS_RADIUS: 120,          // Distance culling limit
-  PLAYER_SPEED: 9,          // units/sec base walk speed
-  RUN_SPEED: 15,            // units/sec sprint
+  PLAYER_SPEED: round1(REFERENCE_WALK_SPEED * speedScale), // units/sec base walk, scaled to map
+  RUN_SPEED: round1(REFERENCE_RUN_SPEED * speedScale),     // units/sec sprint, scaled to map
   CROUCH_SPEED: 0,          // units/sec while crouched (stationary lock)
   PLAYER_RADIUS: 0.45,
   PLAYER_HEIGHT: 2.3,

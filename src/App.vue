@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import type { CoreId } from './game/config'
+import { CORE_IDS } from './game/config'
 import { STATIC_MAP_SEED } from './game/map'
 import { SceneRenderer } from './game/scene'
 import { GameEngine } from './game/engine'
@@ -21,7 +22,11 @@ import { LanSignaler } from './net/lan'
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 const inLobby = ref(true)
 const callsign = ref(localStorage.getItem('ltown_callsign') || 'Pilot-' + Math.floor(100 + Math.random() * 900))
-const selectedCore = ref<CoreId>('denja')
+const storedCore = localStorage.getItem('ltown_core')
+const selectedCore = ref<CoreId>(
+  storedCore && (CORE_IDS as string[]).includes(storedCore) ? (storedCore as CoreId) : 'denja'
+)
+watch(selectedCore, (v) => localStorage.setItem('ltown_core', v))
 
 // Unified PeerJS Room State
 const currentRoomCode = ref('')
@@ -220,6 +225,7 @@ const initEngine = (seed: number, mode: 'solo' | 'host' | 'client') => {
   currentMatchMode = mode
   p2pStatus.value = ''
   localStorage.setItem('ltown_callsign', callsign.value)
+  localStorage.setItem('ltown_core', selectedCore.value)
   isGameOver.value = false
   matchResults.value = null
 

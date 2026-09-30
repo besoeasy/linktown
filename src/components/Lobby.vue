@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { CORE_DETAILS, CORE_IDS, type CoreId } from '../game/config'
+import { ref, computed } from 'vue'
+import { CORE_DETAILS, CORE_IDS } from '../game/config'
 import type { PublicRoom } from '../net/directory'
 
 const props = defineProps<{
@@ -12,6 +12,8 @@ const props = defineProps<{
   isConnecting?: boolean
 }>()
 
+type CoreId = (typeof CORE_IDS)[number]
+
 const emit = defineEmits<{
   (e: 'update:callsign', val: string): void
   (e: 'update:selectedCore', val: CoreId): void
@@ -21,162 +23,157 @@ const emit = defineEmits<{
   (e: 'refreshRooms'): void
 }>()
 
-const activeTab = ref<'cores' | 'rooms' | 'controls'>('cores')
 const roomCodeInput = ref('')
+const copied = ref(false)
+let copyTimer: any = null
 
-const handleJoinInput = () => {
-  const code = roomCodeInput.value.trim().toUpperCase()
-  if (code) {
-    emit('joinPeerRoom', code)
-  }
+const core = computed(() => CORE_DETAILS[props.selectedCore])
+const callsignValid = computed(() => props.callsign.trim().length >= 2)
+const joinCode = computed(() =>
+  roomCodeInput.value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8)
+)
+
+const randomizeCallsign = () => {
+  const a = ['Vex', 'Kuro', 'Rook', 'Nyx', 'Flux', 'Sable'][Math.floor(Math.random() * 6)]
+  const b = ['Runner', 'Warden', 'Drift', 'Hound', 'Saint'][Math.floor(Math.random() * 5)]
+  emit('update:callsign', `${a}-${b}`)
+}
+
+const handleJoin = () => {
+  if (joinCode.value) emit('joinPeerRoom', joinCode.value)
+}
+
+const inviteLink = computed(() =>
+  props.inviteRoomCode
+    ? `${window.location.origin}${window.location.pathname}#room=${props.inviteRoomCode}`
+    : ''
+)
+const copyInvite = async () => {
+  try {
+    await navigator.clipboard.writeText(inviteLink.value)
+    copied.value = true
+    clearTimeout(copyTimer)
+    copyTimer = setTimeout(() => (copied.value = false), 1500)
+  } catch { /* noop */ }
 }
 </script>
 
 <template>
-  <div class="lobby">
-    <div class="lobby-inner">
-      <header class="lobby-header">
+  <div class="lobby" :style="{ '--core': core.color }">
+    <div class="wrap">
+      <header class="top">
         <div class="brand">
-          <h1>LINKTOWN</h1>
-          <span class="sub">3049 REMOTE AGE // ATMA CORES</span>
+          <span class="mark">LT</span>
+          <span class="brand-t">LINKTOWN <small>3049 · ATMA TRIALS</small></span>
         </div>
-        <div class="pilot">
-          <label for="callsign">OPERATOR CALLSIGN</label>
+        <span class="status" :class="{ on: dirOnline }">
+          {{ dirOnline ? `${rooms.length} live` : 'offline' }}
+        </span>
+      </header>
+
+      <div v-if="inviteRoomCode" class="invite" role="alert">
+        <span>Room <strong>{{ inviteRoomCode }}</strong> is waiting for you.</span>
+        <span class="invite-actions">
+          <button class="quiet" @click="copyInvite">{{ copied ? 'Copied' : 'Copy link' }}</button>
+          <button class="primary sm" :disabled="isConnecting" @click="emit('joinPeerRoom', inviteRoomCode)">
+            {{ isConnecting ? 'Joining…' : 'Join room' }}
+          </button>
+        </span>
+      </div>
+
+      <section class="hero">
+        <h2>Drop into Linktown.</h2>
+        <p>10-minute trials. Hull is ammo. Only your Atma Core sets you apart.</p>
+      </section>
+
+      <section class="block">
+        <label class="label" for="callsign">Callsign</label>
+        <div class="row">
           <input
             id="callsign"
             type="text"
             maxlength="18"
-            placeholder="Enter callsign"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="e.g. Vex-Runner"
             :value="callsign"
             @input="emit('update:callsign', ($event.target as HTMLInputElement).value)"
           />
+          <button class="quiet" @click="randomizeCallsign">Random</button>
         </div>
-      </header>
 
-      <div v-if="inviteRoomCode" class="invite">
-        <span>Room invite: <strong>{{ inviteRoomCode }}</strong></span>
-        <button :disabled="isConnecting" @click="emit('joinPeerRoom', inviteRoomCode)">
-          {{ isConnecting ? 'Connecting…' : 'Connect & play' }}
-        </button>
-      </div>
-
-      <a
-        class="oss"
-        href="https://github.com/besoeasy/LINKTOWN"
-        target="_blank"
-        rel="noopener"
-      >
-        <span class="oss-title">OPEN SOURCE</span>
-        <span class="oss-sub">This project is open source — view the code and contribute on GitHub ↗</span>
-      </a>
-
-      <nav class="tabs">
-        <button :class="{ active: activeTab === 'cores' }" @click="activeTab = 'cores'">
-          Cores
-        </button>
-        <button :class="{ active: activeTab === 'rooms' }" @click="activeTab = 'rooms'">
-          Rooms ({{ rooms.length }})
-        </button>
-        <button :class="{ active: activeTab === 'controls' }" @click="activeTab = 'controls'">
-          Controls
-        </button>
-      </nav>
-
-      <main class="content">
-        <div v-if="activeTab === 'cores'" class="cores-grid">
+        <span class="label" style="margin-top: 20px">Atma Core</span>
+        <div class="cores" role="listbox" aria-label="Atma cores">
           <button
             v-for="cid in CORE_IDS"
             :key="cid"
-            class="core-card"
-            :class="{ selected: selectedCore === cid }"
+            role="option"
+            :aria-selected="cid === selectedCore"
+            class="core"
+            :class="{ sel: cid === selectedCore }"
             @click="emit('update:selectedCore', cid)"
           >
-            <span class="core-top">
-              <span class="core-badge">{{ CORE_DETAILS[cid].badge }}</span>
-              <span class="core-name">{{ CORE_DETAILS[cid].name }}</span>
-              <span class="core-cd">
-                {{ CORE_DETAILS[cid].cooldown > 0 ? `${CORE_DETAILS[cid].cooldown / 1000}s` : 'Passive' }}
-              </span>
-            </span>
-            <span class="core-maker">{{ CORE_DETAILS[cid].maker }} — {{ CORE_DETAILS[cid].ability }}</span>
-            <span class="core-desc">{{ CORE_DETAILS[cid].desc }}</span>
+            <span class="core-b">{{ CORE_DETAILS[cid].badge }}</span>
+            <span class="core-n">{{ CORE_DETAILS[cid].name }}</span>
+            <span class="core-a">{{ CORE_DETAILS[cid].ability }}</span>
           </button>
         </div>
+        <p class="core-detail">
+          <strong>{{ core.name }}</strong> — {{ core.desc }}
+          <span class="muted">{{ core.maker }} · Q every {{ core.cooldown / 1000 }}s</span>
+        </p>
+      </section>
 
-        <div v-else-if="activeTab === 'rooms'" class="rooms">
-          <div class="rooms-head">
-            <span>{{ dirOnline ? 'Public games right now' : 'Directory offline — join by code below' }}</span>
-            <button class="ghost" @click="emit('refreshRooms')">Refresh</button>
-          </div>
+      <section class="block play">
+        <button class="primary big" :disabled="!callsignValid" @click="emit('startSolo')">
+          {{ isConnecting ? 'Working…' : 'Play solo' }}
+        </button>
+        <p v-if="!callsignValid" class="hint">Enter a callsign (min 2 characters) to play.</p>
+        <p v-else class="hint">Instant match against bots. <kbd>Enter</kbd> to start.</p>
 
-          <p v-if="rooms.length === 0" class="empty">
-            No public games. Host one and it appears here.
-          </p>
-
-          <div v-else class="room-list">
-            <div v-for="r in rooms" :key="r.code" class="room-row">
-              <span class="room-name">{{ r.name }}</span>
-              <span class="room-meta">{{ r.code }} · {{ r.players }} / {{ r.maxPlayers }}</span>
-              <button
-                class="ghost"
-                :disabled="isConnecting"
-                @click="emit('joinPeerRoom', r.code)"
-              >
-                Join
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div v-else class="controls">
-          <section>
-            <h2>Controls</h2>
-            <ul>
-              <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move</li>
-              <li><kbd>Mouse</kbd> Aim</li>
-              <li><kbd>Click</kbd> Fire (−2 hull)</li>
-              <li><kbd>Q</kbd> Core ability</li>
-              <li><kbd>E</kbd> Super (−50 hull)</li>
-              <li><kbd>R</kbd> Shield (−80 hull)</li>
-              <li><kbd>Space</kbd> Jump</li>
-              <li><kbd>C</kbd> Crouch</li>
-              <li><kbd>Tab</kbd> / <kbd>F</kbd> Scoreboard</li>
-            </ul>
-          </section>
-          <section>
-            <h2>Rules</h2>
-            <p>
-              Hull is ammunition: shots, jumps, shields and abilities spend it.
-              Survive 3 seconds of calm and hull rebuilds gradually —
-              3× faster while crouched.
-            </p>
-            <p>
-              All chassis are identical. Only the Atma Core differs.
-              {{ CORE_DETAILS[selectedCore].name }} — {{ CORE_DETAILS[selectedCore].desc }}
-            </p>
-          </section>
-        </div>
-      </main>
-
-      <footer class="actions">
-        <button class="primary" @click="emit('startSolo')">Solo trial</button>
-        <button class="primary" :disabled="isConnecting" @click="emit('createPeerRoom')">Host match</button>
-        <span class="join">
-          <input
-            v-model="roomCodeInput"
-            type="text"
-            placeholder="Room code"
-            maxlength="8"
-            @keyup.enter="handleJoinInput"
-          />
-          <button
-            class="ghost"
-            :disabled="!roomCodeInput.trim() || isConnecting"
-            @click="handleJoinInput"
-          >
-            {{ isConnecting ? 'Joining…' : 'Join' }}
+        <div class="row split">
+          <button class="secondary" :disabled="!callsignValid || isConnecting" @click="emit('createPeerRoom')">
+            Host match
           </button>
-        </span>
+          <div class="join">
+            <input
+              v-model="roomCodeInput"
+              maxlength="8"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="Room code"
+              aria-label="Room code"
+              @keyup.enter="handleJoin"
+            />
+            <button class="secondary" :disabled="!joinCode || isConnecting" @click="handleJoin">Join</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="block">
+        <div class="rooms-head">
+          <span class="label">Live rooms</span>
+          <button class="quiet sm" @click="emit('refreshRooms')">Refresh</button>
+        </div>
+        <p v-if="!dirOnline" class="muted">Directory offline — you can still join by code.</p>
+        <p v-else-if="rooms.length === 0" class="muted">No public rooms right now. Host one and it appears here.</p>
+        <ul v-else class="rooms">
+          <li v-for="r in rooms" :key="r.code">
+            <span class="r-name">{{ r.name }}</span>
+            <span class="muted">{{ r.code }} · {{ r.players }}/{{ r.maxPlayers || 16 }}</span>
+            <button class="quiet sm" :disabled="isConnecting" @click="emit('joinPeerRoom', r.code)">Join</button>
+          </li>
+        </ul>
+      </section>
+
+      <details class="manual">
+        <summary>Controls &amp; rules</summary>
+        <p><kbd>WASD</kbd> move · <kbd>Mouse</kbd> aim · <kbd>Click</kbd> fire · <kbd>Q</kbd> core · <kbd>E</kbd> super · <kbd>R</kbd> shield · <kbd>Space</kbd> jump · <kbd>C</kbd> crouch · <kbd>Tab</kbd> scoreboard</p>
+        <p class="muted">Shots, jumps and abilities spend hull. After 3s of calm, hull rebuilds — 3× faster while crouched.</p>
+      </details>
+
+      <footer class="foot">
+        <a href="https://github.com/besoeasy/LINKTOWN" target="_blank" rel="noopener">Open source on GitHub</a>
       </footer>
     </div>
   </div>
@@ -184,402 +181,90 @@ const handleJoinInput = () => {
 
 <style scoped>
 .lobby {
-  position: absolute;
-  inset: 0;
-  background: #0b0d12;
-  color: #e6e8ee;
-  font-family: 'Rajdhani', sans-serif;
-  z-index: 20;
-  overflow-y: auto;
+  --core: #f97316;
+  position: absolute; inset: 0; z-index: 20; overflow-y: auto;
+  background: #0b0d12; color: #e8ebf1;
+  font-family: 'Chakra Petch', 'Rajdhani', sans-serif;
 }
+.wrap { max-width: 720px; margin: 0 auto; padding: 36px 24px 32px; display: flex; flex-direction: column; gap: 28px; }
 
-.lobby-inner {
-  min-height: 100%;
-  max-width: 1060px;
-  margin: 0 auto;
-  padding: 32px 28px 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
+.top { display: flex; justify-content: space-between; align-items: center; }
+.brand { display: flex; align-items: center; gap: 10px; }
+.mark { width: 32px; height: 32px; display: grid; place-items: center; font-size: 13px; font-weight: 700; color: #0b0d12; background: #e8ebf1; border-radius: 6px; }
+.brand-t { font-weight: 700; letter-spacing: 3px; font-size: 15px; }
+.brand-t small { display: block; font-size: 10px; letter-spacing: 2px; color: #8a90a0; font-weight: 600; }
+.status { font-size: 12px; color: #8a90a0; font-family: 'JetBrains Mono', monospace; }
+.status.on { color: #7ee2a8; }
+
+.invite { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; border: 1px solid #2a3040; border-radius: 8px; padding: 12px 14px; background: #11151d; }
+.invite-actions { display: flex; gap: 8px; align-items: center; }
+
+.hero h2 { margin: 0; font-size: 32px; letter-spacing: 1px; }
+.hero p { margin: 6px 0 0; color: #aab0c0; }
+
+.block { display: flex; flex-direction: column; gap: 10px; }
+.label { font-size: 11px; letter-spacing: 2px; color: #8a90a0; font-weight: 700; }
+.row { display: flex; gap: 8px; }
+.row.split { margin-top: 4px; }
+.row.split .secondary { flex-shrink: 0; }
+.join { display: flex; gap: 8px; flex: 1; }
+
+input {
+  flex: 1; background: #11151d; border: 1px solid #2a3040; border-radius: 6px;
+  color: #fff; font-family: inherit; font-size: 15px; padding: 10px 12px; outline: none; min-width: 0;
 }
+input:focus { border-color: var(--core); }
+.join input { text-transform: uppercase; letter-spacing: 2px; text-align: center; font-family: 'JetBrains Mono', monospace; font-size: 14px; }
 
-.lobby-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  gap: 24px;
-  flex-wrap: wrap;
-  padding-bottom: 16px;
-  border-bottom: 1px solid #222835;
+.cores { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.core { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; background: #11151d; border: 1px solid #232835; border-radius: 8px; padding: 10px; cursor: pointer; color: #e8ebf1; font-family: inherit; text-align: left; }
+.core:hover { border-color: #4a5266; }
+.core.sel { border-color: var(--core); }
+.core-b { font-size: 20px; }
+.core-n { font-weight: 700; font-size: 13px; }
+.core-a { font-size: 11px; color: #8a90a0; }
+.core-detail { margin: 2px 0 0; font-size: 13px; color: #c6ccd8; }
+.muted { color: #8a90a0; font-size: 13px; }
+.core-detail .muted { display: block; margin-top: 2px; font-size: 12px; }
+
+.play .hint { margin: 0; font-size: 12px; color: #8a90a0; }
+
+.primary { background: var(--core); border: 1px solid var(--core); color: #0b0d12; font-weight: 800; border-radius: 8px; padding: 10px 18px; cursor: pointer; font-family: inherit; font-size: 14px; }
+.primary:hover:not(:disabled) { filter: brightness(1.08); }
+.primary:disabled { opacity: .35; cursor: not-allowed; }
+.primary.big { width: 100%; font-size: 17px; padding: 14px; }
+.primary.sm { padding: 8px 14px; font-size: 13px; }
+.secondary { background: transparent; border: 1px solid #2a3040; color: #e8ebf1; border-radius: 8px; padding: 10px 16px; font-weight: 700; cursor: pointer; font-family: inherit; font-size: 14px; white-space: nowrap; }
+.secondary:hover:not(:disabled) { border-color: #6b7488; }
+.secondary:disabled { opacity: .35; cursor: not-allowed; }
+.quiet { background: none; border: none; color: #aab0c0; cursor: pointer; font-family: inherit; font-size: 13px; font-weight: 600; white-space: nowrap; padding: 10px 8px; }
+.quiet:hover { color: #fff; }
+.quiet.sm { padding: 4px 8px; font-size: 12px; }
+
+.rooms-head { display: flex; justify-content: space-between; align-items: center; }
+.rooms { list-style: none; margin: 0; padding: 0; border-top: 1px solid #1c212c; }
+.rooms li { display: flex; align-items: center; gap: 12px; padding: 10px 2px; border-bottom: 1px solid #1c212c; font-size: 14px; }
+.r-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rooms li .muted { font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+.rooms li button { margin-left: auto; }
+
+.manual { border-top: 1px solid #1c212c; padding-top: 12px; font-size: 13px; color: #aab0c0; }
+.manual summary { cursor: pointer; color: #8a90a0; font-size: 12px; letter-spacing: 1px; }
+.manual p { line-height: 1.6; }
+kbd { background: #1c212c; border: 1px solid #2a3040; border-radius: 4px; padding: 0 6px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #fff; }
+
+.foot { border-top: 1px solid #1c212c; padding-top: 12px; }
+.foot a { color: #8a90a0; font-size: 12px; text-decoration: none; }
+.foot a:hover { color: #fff; }
+
+button:focus-visible, input:focus-visible, summary:focus-visible, a:focus-visible { outline: 2px solid var(--core); outline-offset: 2px; }
+
+@media (max-width: 560px) {
+  .cores { grid-template-columns: repeat(2, 1fr); }
+  .row.split { flex-direction: column; }
+  .hero h2 { font-size: 26px; }
 }
-
-.brand h1 {
-  margin: 0;
-  font-size: 30px;
-  letter-spacing: 4px;
-  font-weight: 700;
-  color: #f2f4f8;
-}
-
-.sub {
-  font-size: 12px;
-  letter-spacing: 2px;
-  color: #8a90a0;
-}
-
-.oss {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  border: 1px solid #f2f4f8;
-  border-radius: 6px;
-  padding: 18px 22px;
-  color: #f2f4f8;
-  text-decoration: none;
-}
-
-.oss:hover {
-  background: #f2f4f8;
-  color: #0b0d12;
-}
-
-.oss:hover .oss-sub {
-  color: #0b0d12;
-}
-
-.oss-title {
-  font-size: 24px;
-  font-weight: 700;
-  letter-spacing: 3px;
-  white-space: nowrap;
-}
-
-.oss-sub {
-  font-size: 14px;
-  color: #aab0c0;
-}
-
-.pilot {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 240px;
-}
-
-.pilot label {
-  font-size: 11px;
-  letter-spacing: 2px;
-  color: #8a90a0;
-}
-
-.pilot input {
-  background: #12151d;
-  border: 1px solid #2a3040;
-  border-radius: 4px;
-  color: #f2f4f8;
-  font-family: inherit;
-  font-size: 16px;
-  font-weight: 600;
-  padding: 8px 12px;
-  outline: none;
-}
-
-.pilot input:focus {
-  border-color: #6b7488;
-}
-
-.invite {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 16px;
-  border: 1px solid #2a3040;
-  border-radius: 4px;
-  padding: 10px 14px;
-  background: #12151d;
-  font-size: 15px;
-}
-
-.invite strong {
-  letter-spacing: 1px;
-}
-
-.tabs {
-  display: flex;
-  gap: 4px;
-  border-bottom: 1px solid #222835;
-}
-
-.tabs button {
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: #8a90a0;
-  font-family: inherit;
-  font-size: 14px;
-  font-weight: 700;
-  letter-spacing: 1px;
-  padding: 8px 14px;
-  cursor: pointer;
-}
-
-.tabs button.active {
-  color: #f2f4f8;
-  border-bottom-color: #f2f4f8;
-}
-
-.content {
-  flex: 1;
-}
-
-.cores-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 10px;
-}
-
-.core-card {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  text-align: left;
-  background: #12151d;
-  border: 1px solid #232835;
-  border-radius: 4px;
-  color: #e6e8ee;
-  font-family: inherit;
-  padding: 12px;
-  cursor: pointer;
-}
-
-.core-card:hover {
-  border-color: #4a5266;
-}
-
-.core-card.selected {
-  border-color: #f2f4f8;
-}
-
-.core-top {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.core-badge {
-  font-size: 17px;
-}
-
-.core-name {
-  font-size: 15px;
-  font-weight: 700;
-}
-
-.core-cd {
-  margin-left: auto;
-  font-size: 11px;
-  color: #8a90a0;
-}
-
-.core-maker {
-  font-size: 12px;
-  color: #aab0c0;
-}
-
-.core-desc {
-  font-size: 13px;
-  line-height: 1.4;
-  color: #8a90a0;
-}
-
-.controls {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 24px;
-}
-
-.rooms-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-  font-size: 14px;
-  color: #8a90a0;
-}
-
-.empty {
-  color: #8a90a0;
-  font-size: 14px;
-  padding: 32px 0;
-}
-
-.room-list {
-  display: flex;
-  flex-direction: column;
-}
-
-.room-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 2px;
-  border-bottom: 1px solid #1c212c;
-  font-size: 14px;
-}
-
-.room-name {
-  font-weight: 700;
-}
-
-.room-meta {
-  color: #8a90a0;
-  letter-spacing: 1px;
-}
-
-.room-row button {
-  margin-left: auto;
-}
-
-.controls h2 {
-  margin: 0 0 10px;
-  font-size: 14px;
-  letter-spacing: 2px;
-  color: #8a90a0;
-  font-weight: 700;
-}
-
-.controls ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  font-size: 14px;
-}
-
-.controls li {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.controls p {
-  font-size: 14px;
-  line-height: 1.55;
-  color: #aab0c0;
-  margin: 0 0 10px;
-}
-
-kbd {
-  background: #1c212c;
-  border: 1px solid #2a3040;
-  border-radius: 3px;
-  padding: 1px 7px;
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.actions {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  flex-wrap: wrap;
-  padding-top: 16px;
-  border-top: 1px solid #222835;
-}
-
-button {
-  font-family: inherit;
-}
-
-.primary {
-  background: #f2f4f8;
-  border: 1px solid #f2f4f8;
-  border-radius: 4px;
-  color: #0b0d12;
-  font-size: 14px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  padding: 10px 18px;
-  cursor: pointer;
-}
-
-.primary:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.ghost {
-  background: transparent;
-  border: 1px solid #2a3040;
-  border-radius: 4px;
-  color: #e6e8ee;
-  font-size: 14px;
-  font-weight: 600;
-  padding: 9px 16px;
-  cursor: pointer;
-}
-
-.ghost:hover:not(:disabled) {
-  border-color: #6b7488;
-}
-
-.ghost:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.invite button {
-  background: #f2f4f8;
-  border: 1px solid #f2f4f8;
-  border-radius: 4px;
-  color: #0b0d12;
-  font-size: 13px;
-  font-weight: 700;
-  padding: 8px 14px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.invite button:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.join {
-  display: flex;
-  gap: 8px;
-  margin-left: auto;
-}
-
-.join input {
-  background: #12151d;
-  border: 1px solid #2a3040;
-  border-radius: 4px;
-  color: #f2f4f8;
-  font-family: inherit;
-  font-size: 14px;
-  letter-spacing: 2px;
-  text-transform: uppercase;
-  text-align: center;
-  width: 130px;
-  padding: 9px 8px;
-  outline: none;
-}
-
-.join input:focus {
-  border-color: #6b7488;
-}
-
-@media (max-width: 640px) {
-  .controls {
-    grid-template-columns: 1fr;
-  }
-
-  .join {
-    margin-left: 0;
-  }
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
 }
 </style>
