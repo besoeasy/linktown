@@ -10,6 +10,7 @@ import type { MapData, Box } from './map'
 import { groundHeight } from './map'
 import type { PlayerState, NaniteCache, JumpPad, Portal } from '../net/types'
 import { CFG, CORE_DETAILS } from './config'
+import { PerfOverlay, isPerfOverlayEnabled } from './perfOverlay'
 import { sound } from './audio'
 
 /**
@@ -1427,6 +1428,7 @@ export class SceneRenderer {
   private viewmodelFill!: THREE.PointLight
   private sun!: THREE.DirectionalLight
   private readonly quality: GfxQuality
+  private perf?: PerfOverlay
   // Scratch vectors for the camera-following shadow frustum (no per-frame alloc)
   private readonly shadowRight = new THREE.Vector3()
   private readonly shadowUp = new THREE.Vector3()
@@ -1517,6 +1519,8 @@ export class SceneRenderer {
     this.camera.add(this.viewmodelFill)
     this.setupRobotArm()
     this.setupFirstPersonShield()
+
+    if (isPerfOverlayEnabled()) this.perf = new PerfOverlay(this.renderer, this.quality)
 
     window.addEventListener('resize', this.onResize)
   }
@@ -3962,6 +3966,7 @@ export class SceneRenderer {
   }
 
   render(dt: number, isMoving = false, superActive = false, shieldActive = false, crouching = false, shieldFrac = 1) {
+    this.perf?.frameStart()
     for (const c of this.clouds) {
       c.position.x += (c.userData as any).driftX * dt * 4
       c.position.z += (c.userData as any).driftZ * dt * 4
@@ -4288,7 +4293,9 @@ export class SceneRenderer {
     }
 
     this.updateShadowFrustum()
+    this.perf?.gpuBegin()
     this.composer.render()
+    this.perf?.frameEnd()
   }
 
   destroy() {
@@ -4327,6 +4334,7 @@ export class SceneRenderer {
     }
     this.playerMeshes.clear()
     this.camera.remove(this.viewmodelFill)
+    this.perf?.dispose()
     this.gtaoPass?.dispose()
     this.bloomPass?.dispose()
     this.composer.dispose()
