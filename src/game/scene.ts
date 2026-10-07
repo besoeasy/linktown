@@ -6,6 +6,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import type { MapData, Box } from './map'
 import { groundHeight } from './map'
 import type { PlayerState, NaniteCache, JumpPad, Portal } from '../net/types'
@@ -1304,6 +1305,122 @@ export function getGfxQuality(): GfxQuality {
     if (isQ(stored)) return stored
   } catch { /* storage unavailable */ }
   return 'medium'
+}
+
+/**
+ * Remote-player chassis rendering.
+ *
+ * Each RX-11 shell is built from ~50 small primitives across 12 animated
+ * bone groups. Drawn naively that is ~50 draw calls per player per pass.
+ * The four neutral chassis surfaces (armor/trim/joint/weapon) are shared
+ * module materials that act as *tags*: after construction, every bone's
+ * tagged parts are baked into a single geometry whose per-vertex `color`
+ * and `pbr` (roughness, metalness) attributes reproduce the original
+ * materials, drawn with one shared `chassisMat`. Parts with other
+ * materials (core energy, visor, ...) are merged per material. Bone
+ * transforms are untouched, so animation is unchanged.
+ */
+const playerArmorMat = new THREE.MeshStandardMaterial({ color: 0x222a36, roughness: 0.35, metalness: 0.85 })
+const playerTrimMat = new THREE.MeshStandardMaterial({ color: 0x3a4659, roughness: 0.28, metalness: 0.90 })
+const playerJointMat = new THREE.MeshStandardMaterial({ color: 0x141820, roughness: 0.55, metalness: 0.70 })
+const playerWeaponMat = new THREE.MeshStandardMaterial({ color: 0x181e26, roughness: 0.3, metalness: 0.9 })
+const playerChamberMat = new THREE.MeshBasicMaterial({ color: 0x080b10 })
+const chassisTagMats = new Set<THREE.Material>([playerArmorMat, playerTrimMat, playerJointMat, playerWeaponMat])
+
+/** One material for every player's neutral chassis; PBR params come per vertex. */
+const chassisMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 1 })
+chassisMat.onBeforeCompile = (shader) => {
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', '#include <common>\nattribute vec2 pbr;\nvarying vec2 vPbr;')
+    .replace('#include <begin_vertex>', '#include <begin_vertex>\nvPbr = pbr;')
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <common>', '#include <common>\nvarying vec2 vPbr;')
+    .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = vPbr.x;')
+    .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nmetalnessFactor = vPbr.y;')
+}
+chassisMat.customProgramCacheKey = () => 'chassis-pbr'
+
+/** Materials shared across players — never disposed with a player. */
+const sharedPlayerMats = new Set<THREE.Material>([...chassisTagMats, playerChamberMat, chassisMat])
+
+/** Bake `parts` (direct children of `parent`) into one mesh drawn with `material`. */
+function mergeParts(parent: THREE.Object3D, parts: THREE.Mesh[], material: THREE.Material, bakeSurface: boolean) {
+  const geos = parts.map((m) => {
+    m.updateMatrix()
+    let g = m.geometry.clone().applyMatrix4(m.matrix)
+    for (const name of Object.keys(g.attributes)) {
+      if (name !== 'position' && name !== 'normal' && name !== 'uv') g.deleteAttribute(name)
+    }
+    if (g.index) g = g.toNonIndexed()
+    if (bakeSurface) {
+      const src = m.material as THREE.MeshStandardMaterial
+      const n = g.attributes.position.count
+      const color = new Float32Array(n * 3)
+      const pbr = new Float32Array(n * 2)
+      for (let i = 0; i < n; i++) {
+        color[i * 3] = src.color.r
+        color[i * 3 + 1] = src.color.g
+        color[i * 3 + 2] = src.color.b
+        pbr[i * 2] = src.roughness
+        pbr[i * 2 + 1] = src.metalness
+      }
+      g.setAttribute('color', new THREE.BufferAttribute(color, 3))
+      g.setAttribute('pbr', new THREE.BufferAttribute(pbr, 2))
+    }
+    return g
+  })
+  const merged = mergeGeometries(geos, false)
+  for (const g of geos) g.dispose()
+  if (!merged) return
+  const mesh = new THREE.Mesh(merged, material)
+  mesh.castShadow = parts.some((p) => p.castShadow)
+  mesh.receiveShadow = parts.some((p) => p.receiveShadow)
+  for (const p of parts) {
+    parent.remove(p)
+    p.geometry.dispose()
+  }
+  parent.add(mesh)
+}
+
+/**
+ * Collapse the static parts of every bone under `root` into as few meshes
+ * as possible. Named meshes and anything in `keep` (animated parts) stay.
+ */
+function mergeStaticParts(root: THREE.Object3D, keep: Set<THREE.Object3D>) {
+  const bones: THREE.Object3D[] = []
+  root.traverse((o) => { if (!(o as THREE.Mesh).isMesh) bones.push(o) })
+  for (const bone of bones) {
+    const chassisParts: THREE.Mesh[] = []
+    const byMat = new Map<THREE.Material, THREE.Mesh[]>()
+    for (const child of bone.children) {
+      const m = child as THREE.Mesh
+      if (!m.isMesh || m.name || keep.has(m) || Array.isArray(m.material) || m.children.length > 0) continue
+      if (chassisTagMats.has(m.material)) {
+        chassisParts.push(m)
+      } else {
+        const list = byMat.get(m.material)
+        if (list) list.push(m)
+        else byMat.set(m.material, [m])
+      }
+    }
+    if (chassisParts.length > 0) mergeParts(bone, chassisParts, chassisMat, true)
+    for (const [mat, list] of byMat) {
+      if (list.length > 1) mergeParts(bone, list, mat, false)
+    }
+  }
+}
+
+/** Free a remote player's GPU resources, sparing shared materials. */
+function disposePlayerMesh(grp: THREE.Object3D) {
+  grp.traverse((obj: any) => {
+    if (obj.geometry) obj.geometry.dispose?.()
+    const mats = Array.isArray(obj.material) ? obj.material : obj.material ? [obj.material] : []
+    for (const m of mats) {
+      if (sharedPlayerMats.has(m)) continue
+      m.map?.dispose?.()
+      m.dispose?.()
+    }
+  })
 }
 
 /** Half-extent (m) of the sun shadow frustum, which follows the camera. */
@@ -2815,7 +2932,10 @@ export class SceneRenderer {
         group.rotation.y = p.yaw
 
         // Rotate tactical beacon diamond
-        const beacon = group.getObjectByName('beacon') as THREE.Mesh
+        const refs = group.userData.refs as {
+          beacon: THREE.Mesh; nameplate: THREE.Sprite; shield: THREE.Group; super: THREE.Mesh
+        }
+        const beacon = refs.beacon
         if (beacon) {
           beacon.rotation.y += 0.04
           beacon.rotation.x += 0.02
@@ -2824,7 +2944,7 @@ export class SceneRenderer {
         // Dynamically refresh nameplate if callsign changed
         if (group.userData.renderedName !== p.name) {
           group.userData.renderedName = p.name
-          const np = group.getObjectByName('nameplate') as THREE.Sprite
+          const np = refs.nameplate
           if (np && np.material) {
             np.material.map?.dispose()
             np.material.map = createNameplateTexture(p.name, p.isBot)
@@ -2832,13 +2952,13 @@ export class SceneRenderer {
           }
         }
 
-        const shieldMesh = group.getObjectByName('shield') as THREE.Mesh
+        const shieldMesh = refs.shield
         if (shieldMesh) {
           shieldMesh.visible = p.shieldActive && Date.now() < p.shieldEnd
           group.userData.shieldEnd = p.shieldEnd
         }
 
-        const superMesh = group.getObjectByName('super') as THREE.Mesh
+        const superMesh = refs.super
         if (superMesh) {
           superMesh.visible = p.superActive && Date.now() < p.superEnd
         }
@@ -2915,6 +3035,7 @@ export class SceneRenderer {
     for (const [id, grp] of this.playerMeshes) {
       if (!activeIds.has(id)) {
         this.scene.remove(grp)
+        disposePlayerMesh(grp)
         this.playerMeshes.delete(id)
       }
     }
@@ -2980,24 +3101,12 @@ export class SceneRenderer {
     const core = CORE_DETAILS[p.character] || CORE_DETAILS.denja
 
     // ── High-Fidelity Materials for RX-11 Chassis ─────────────────────────────
-    // 1. Primary Nanite Armor: Dark carbon-nanite alloy with subtle gloss
-    const armorMat = new THREE.MeshStandardMaterial({
-      color: 0x222a36,
-      roughness: 0.35,
-      metalness: 0.85
-    })
-    // 2. Secondary Armor & Trim: Polished gunmetal steel plates
-    const trimMat = new THREE.MeshStandardMaterial({
-      color: 0x3a4659,
-      roughness: 0.28,
-      metalness: 0.90
-    })
-    // 3. Mechanical Joint Framework & Under-Chassis: Dark titanium
-    const jointMat = new THREE.MeshStandardMaterial({
-      color: 0x141820,
-      roughness: 0.55,
-      metalness: 0.70
-    })
+    // 1-3. Armor (dark carbon-nanite), trim (gunmetal) and joints (dark
+    // titanium) are shared chassis tag materials, baked per vertex by
+    // mergeStaticParts() below.
+    const armorMat = playerArmorMat
+    const trimMat = playerTrimMat
+    const jointMat = playerJointMat
     // 4. Core Energy Emissive Material (tied to Maker core identity)
     const energyMat = new THREE.MeshStandardMaterial({
       color: core.color,
@@ -3010,12 +3119,8 @@ export class SceneRenderer {
     const visorMat = new THREE.MeshBasicMaterial({
       color: core.color
     })
-    // 6. Integrated Weapon Metal
-    const weaponMat = new THREE.MeshStandardMaterial({
-      color: 0x181e26,
-      roughness: 0.3,
-      metalness: 0.9
-    })
+    // 6. Integrated Weapon Metal (shared chassis tag material)
+    const weaponMat = playerWeaponMat
 
     // Store articulated references for dynamic animation
     const humanoid: any = {}
@@ -3094,10 +3199,7 @@ export class SceneRenderer {
     chamberRing.position.set(0, 0.08, 0.145)
     chestGroup.add(chamberRing)
 
-    const chamberBack = new THREE.Mesh(
-      new THREE.CircleGeometry(0.08, 16),
-      new THREE.MeshBasicMaterial({ color: 0x080b10 })
-    )
+    const chamberBack = new THREE.Mesh(new THREE.CircleGeometry(0.08, 16), playerChamberMat)
     chamberBack.position.set(0, 0.08, 0.138)
     chestGroup.add(chamberBack)
 
@@ -3406,6 +3508,13 @@ export class SceneRenderer {
     superMesh.visible = false
     group.add(superMesh)
 
+    // Cached refs: updatePlayers()/render() touch these every frame, and
+    // getObjectByName() walks the whole hierarchy each call.
+    group.userData.refs = { beacon, nameplate, shield: shieldGroup, super: superMesh }
+
+    // ~50 primitives -> ~18 draw calls. The Atma pyramid spins on its own.
+    mergeStaticParts(chassis, new Set([atmaPyramid]))
+
     return group
   }
 
@@ -3529,7 +3638,8 @@ export class SceneRenderer {
   flashThirdPersonShield(id: number) {
     const grp = this.playerMeshes.get(id)
     if (!grp) return
-    grp.traverse(o => {
+    const shield = (grp.userData.refs?.shield as THREE.Object3D | undefined) ?? grp
+    shield.traverse(o => {
       const m = (o as THREE.Mesh).material as THREE.MeshBasicMaterial | undefined
       if (m && (m as any).userData && (m as any).userData.baseColor !== undefined) {
         ;(m as any).userData.flash = 1
@@ -4114,7 +4224,7 @@ export class SceneRenderer {
     // Full-strength cyan while healthy; last 25% shifts amber and blinks so
     // enemies can time their push and owners can time their reposition.
     for (const grp of this.playerMeshes.values()) {
-      const sh = grp.getObjectByName('shield')
+      const sh = grp.userData.refs?.shield as THREE.Group | undefined
       if (sh && sh.visible) {
         sh.rotation.y += dt * 1.5
         const frac = Math.max(0, Math.min(1,
@@ -4323,14 +4433,7 @@ export class SceneRenderer {
     // every rematch leaks GPU memory — renderer.dispose() alone does not free those.
     for (const [, grp] of this.playerMeshes) {
       this.scene.remove(grp)
-      grp.traverse((obj: any) => {
-        if (obj.geometry) obj.geometry.dispose?.()
-        const mats = Array.isArray(obj.material) ? obj.material : obj.material ? [obj.material] : []
-        for (const m of mats) {
-          m.map?.dispose?.()
-          m.dispose?.()
-        }
-      })
+      disposePlayerMesh(grp)
     }
     this.playerMeshes.clear()
     this.camera.remove(this.viewmodelFill)
