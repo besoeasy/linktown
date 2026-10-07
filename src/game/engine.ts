@@ -116,6 +116,7 @@ export class GameEngine {
   private frameCount = 0
   private lastFpsUpdate = performance.now()
   private lastFrameTime = performance.now()
+  private lastHudUpdate = 0
   private vy = 0
   private padBoostUntil = 0
   private lastShotTime = 0
@@ -1364,6 +1365,22 @@ export class GameEngine {
       this.lastFpsUpdate = time
     }
 
+    // Check match completion in render loop
+    if (this.matchTime <= 0 && !this.isGameOver) {
+      this.finishMatch()
+    }
+
+    // Notify UI at ~20 Hz instead of every frame: each update copies the
+    // player + telemetry into Vue refs and re-renders the whole HUD.
+    if (time - this.lastHudUpdate >= 50) {
+      this.lastHudUpdate = time
+      this.pushHudUpdate()
+    }
+
+    requestAnimationFrame(this.renderLoop)
+  }
+
+  private pushHudUpdate() {
     const humanCount = [...this.players.values()].filter(p => !p.isBot).length
     const botCount = [...this.players.values()].filter(p => p.isBot).length
 
@@ -1398,15 +1415,7 @@ export class GameEngine {
       nearestPilot
     }
 
-    // Check match completion in render loop
-    if (this.matchTime <= 0 && !this.isGameOver) {
-      this.finishMatch()
-    }
-
-    // Notify UI
     this.callbacks.onHudUpdate(this.localPlayer, this.matchTime, null, telemetry)
-
-    requestAnimationFrame(this.renderLoop)
   }
 
   handleNetworkMessage(msg: NetMessage, fromId?: number) {
