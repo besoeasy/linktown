@@ -1272,6 +1272,44 @@ function fxAdditiveMat(color: number, opacity: number): THREE.MeshBasicMaterial 
   return m
 }
 
+/**
+ * Graphics quality presets. Picked via `?gfx=low|medium|high` (persisted to
+ * localStorage) — defaults to medium. Each frame the GPU runs: shadow pass,
+ * main pass, optional GTAO (re-renders the scene for normals + AO + denoise),
+ * optional bloom chain, output. These knobs scale the expensive parts.
+ */
+export type GfxQuality = 'low' | 'medium' | 'high'
+const GFX_PRESETS: Record<GfxQuality, {
+  maxPixelRatio: number
+  msaa: number
+  shadowMap: number
+  gtao: boolean
+  bloom: boolean
+}> = {
+  low: { maxPixelRatio: 1, msaa: 0, shadowMap: 1024, gtao: false, bloom: false },
+  medium: { maxPixelRatio: 1, msaa: 4, shadowMap: 2048, gtao: false, bloom: true },
+  high: { maxPixelRatio: 1.5, msaa: 4, shadowMap: 2048, gtao: true, bloom: true }
+}
+
+export function getGfxQuality(): GfxQuality {
+  const isQ = (v: unknown): v is GfxQuality => v === 'low' || v === 'medium' || v === 'high'
+  try {
+    const fromUrl = new URLSearchParams(window.location.search).get('gfx')
+    if (isQ(fromUrl)) {
+      localStorage.setItem('ltown_gfx', fromUrl)
+      return fromUrl
+    }
+    const stored = localStorage.getItem('ltown_gfx')
+    if (isQ(stored)) return stored
+  } catch { /* storage unavailable */ }
+  return 'medium'
+}
+
+/** Half-extent (m) of the sun shadow frustum, which follows the camera. */
+const SHADOW_HALF_EXTENT = 90
+/** Sun direction (matches the sky's sun position). */
+const SUN_DIR = new THREE.Vector3(170, 95, 55).normalize()
+
 export class SceneRenderer {
   public scene: THREE.Scene
   public camera: THREE.PerspectiveCamera
@@ -1384,22 +1422,34 @@ export class SceneRenderer {
     phase: number
   }>()
   private composer!: EffectComposer
-  private gtaoPass!: GTAOPass
-  private bloomPass!: UnrealBloomPass
+  private gtaoPass?: GTAOPass
+  private bloomPass?: UnrealBloomPass
   private viewmodelFill!: THREE.PointLight
+  private sun!: THREE.DirectionalLight
+  private readonly quality: GfxQuality
+  // Scratch vectors for the camera-following shadow frustum (no per-frame alloc)
+  private readonly shadowRight = new THREE.Vector3()
+  private readonly shadowUp = new THREE.Vector3()
+  private readonly shadowCenter = new THREE.Vector3()
 
   constructor(canvas: HTMLCanvasElement) {
+    this.quality = getGfxQuality()
+    const gfx = GFX_PRESETS[this.quality]
+    const pixelRatio = Math.min(window.devicePixelRatio, gfx.maxPixelRatio)
+
     this.scene = new THREE.Scene()
     // Atmospheric daytime depth haze (bright sky blue)
     this.scene.fog = new THREE.FogExp2(0x7ab0d0, 0.00055)
 
     this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.05, 1800)
+    // Canvas AA is off: the frame is produced by the composer (MSAA render
+    // target), so a multisampled default framebuffer is pure waste.
     this.renderer = new THREE.WebGLRenderer({
       canvas,
-      antialias: true,
+      antialias: false,
       powerPreference: 'high-performance'
     })
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5))
+    this.renderer.setPixelRatio(pixelRatio)
     this.renderer.setSize(window.innerWidth, window.innerHeight)
     this.renderer.shadowMap.enabled = true
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
@@ -1414,43 +1464,48 @@ export class SceneRenderer {
     this.scene.environmentIntensity = 0.55
     pmrem.dispose()
 
-    // Post stack: HDR render -> GTAO contact darkening -> subtle bloom
-    // (emissives only) -> tonemap/sRGB. MSAA target keeps edges crisp
-    // since the canvas AA is bypassed.
+    // Post stack: HDR render -> [GTAO contact darkening] -> [subtle bloom
+    // (emissives only)] -> tonemap/sRGB. Bracketed passes depend on the
+    // quality preset. MSAA target keeps edges crisp (canvas AA is off).
     const size = new THREE.Vector2(window.innerWidth, window.innerHeight)
     const msaaTarget = new THREE.WebGLRenderTarget(size.x, size.y, {
       type: THREE.HalfFloatType,
-      samples: 4
+      samples: gfx.msaa
     })
     this.composer = new EffectComposer(this.renderer, msaaTarget)
-    this.composer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5))
+    this.composer.setPixelRatio(pixelRatio)
     this.composer.setSize(size.x, size.y)
     this.composer.addPass(new RenderPass(this.scene, this.camera))
 
     // Screen-space ground truth occlusion adds the contact darkening that a
     // single directional shadow map cannot resolve under cover and between
-    // small props. Keep it world-scaled and denoised to avoid halo artifacts.
-    this.gtaoPass = new GTAOPass(this.scene, this.camera, size.x, size.y)
-    this.gtaoPass.updateGtaoMaterial({
-      radius: 0.72,
-      distanceExponent: 1,
-      thickness: 1,
-      scale: 1,
-      samples: 16,
-      screenSpaceRadius: false
-    })
-    this.gtaoPass.updatePdMaterial({ samples: 16 })
-    this.gtaoPass.output = GTAOPass.OUTPUT.Default
-    this.gtaoPass.blendIntensity = 0.72
-    this.gtaoPass.pdSamples = 16
-    this.composer.addPass(this.gtaoPass)
+    // small props. It re-renders the whole scene for normals/depth, so it is
+    // high-preset only, with halved sample counts (8/8 instead of 16/16).
+    if (gfx.gtao) {
+      this.gtaoPass = new GTAOPass(this.scene, this.camera, size.x, size.y)
+      this.gtaoPass.updateGtaoMaterial({
+        radius: 0.72,
+        distanceExponent: 1,
+        thickness: 1,
+        scale: 1,
+        samples: 8,
+        screenSpaceRadius: false
+      })
+      this.gtaoPass.updatePdMaterial({ samples: 8 })
+      this.gtaoPass.output = GTAOPass.OUTPUT.Default
+      this.gtaoPass.blendIntensity = 0.72
+      this.gtaoPass.pdSamples = 8
+      this.composer.addPass(this.gtaoPass)
+    }
 
-    this.bloomPass = new UnrealBloomPass(size, 0.32, 0.52, 1.05)
-    this.composer.addPass(this.bloomPass)
+    if (gfx.bloom) {
+      this.bloomPass = new UnrealBloomPass(size, 0.32, 0.52, 1.05)
+      this.composer.addPass(this.bloomPass)
+    }
     this.composer.addPass(new OutputPass())
 
     this.setupSky()
-    this.setupLighting()
+    this.setupLighting(gfx.shadowMap)
     this.setupCosmos()
     this.setupClouds()
 
@@ -1464,6 +1519,26 @@ export class SceneRenderer {
     this.setupFirstPersonShield()
 
     window.addEventListener('resize', this.onResize)
+  }
+
+  /**
+   * Re-centre the sun's shadow frustum on the camera, snapped to whole
+   * shadow-map texels in light space so edges stay stable while moving.
+   */
+  private updateShadowFrustum() {
+    const sun = this.sun
+    if (!sun) return
+    const texel = (SHADOW_HALF_EXTENT * 2) / sun.shadow.mapSize.x
+    const c = this.shadowCenter.copy(this.camera.position)
+    c.y = 0
+    const r = Math.round(c.dot(this.shadowRight) / texel) * texel
+    const u = Math.round(c.dot(this.shadowUp) / texel) * texel
+    const d = c.dot(SUN_DIR)
+    c.copy(this.shadowRight).multiplyScalar(r)
+      .addScaledVector(this.shadowUp, u)
+      .addScaledVector(SUN_DIR, d)
+    sun.target.position.copy(c)
+    sun.position.copy(c).addScaledVector(SUN_DIR, 250)
   }
 
   private onResize = () => {
@@ -1821,29 +1896,38 @@ export class SceneRenderer {
     skyU['sunPosition'].value.copy(sunPos)
   }
 
-  private setupLighting() {
+  private setupLighting(shadowMapSize: number) {
     // Apex-style bright daylight: high ambient fill so shadows stay readable
     // and everything is lit up. One soft sun for direction + grounding.
     const hemi = new THREE.HemisphereLight(0xdcecff, 0x6a7258, 0.95)
     this.scene.add(hemi)
 
     // One dominant warm sun preserves readable form and long directional shadows.
-    // The orthographic frustum fits the full 300m arena with a small margin.
+    // The orthographic frustum is a tight box that follows the camera
+    // (see updateShadowFrustum) instead of covering the whole arena: far
+    // fewer casters per shadow pass and ~2x sharper shadow texels.
     const sun = new THREE.DirectionalLight(0xfff0d0, 2.6)
-    sun.position.set(170, 95, 55)
+    sun.position.copy(SUN_DIR).multiplyScalar(250)
     sun.target.position.set(0, 0, 0)
     sun.castShadow = true
-    sun.shadow.mapSize.set(2048, 2048)
+    sun.shadow.mapSize.set(shadowMapSize, shadowMapSize)
     sun.shadow.camera.near = 1
-    sun.shadow.camera.far = 1200
-    sun.shadow.camera.left = -200
-    sun.shadow.camera.right = 200
-    sun.shadow.camera.top = 200
-    sun.shadow.camera.bottom = -200
+    sun.shadow.camera.far = 600
+    sun.shadow.camera.left = -SHADOW_HALF_EXTENT
+    sun.shadow.camera.right = SHADOW_HALF_EXTENT
+    sun.shadow.camera.top = SHADOW_HALF_EXTENT
+    sun.shadow.camera.bottom = -SHADOW_HALF_EXTENT
     sun.shadow.bias = -0.00006
     sun.shadow.normalBias = 0.025
     sun.shadow.radius = 1.5
     this.scene.add(sun, sun.target)
+    this.sun = sun
+
+    // Light-space basis for texel snapping (matches the shadow camera's
+    // lookAt with world-up), so the moving frustum does not shimmer.
+    const z = SUN_DIR
+    this.shadowRight.crossVectors(THREE.Object3D.DEFAULT_UP, z).normalize()
+    this.shadowUp.crossVectors(z, this.shadowRight).normalize()
 
     // Generous opposing fill keeps shaded faces lit — no crushed blacks.
     const fill = new THREE.DirectionalLight(0xbdd2e8, 0.4)
@@ -1964,39 +2048,34 @@ export class SceneRenderer {
       metalness: 0.05,
       envMapIntensity: 0.5
     })
+    // Micro-grain detail: tiled nanite lattice + soil stipple blended into
+    // the ground albedo in the same shader pass. (Previously a separate
+    // transparent full-arena PBR plane, which shaded every ground pixel
+    // twice.) Same 42% blend over the macro layer, tiled 110x.
+    const microTex = createTerrainDetailTexture()
+    microTex.anisotropy = maxAnisotropy
+    groundMat.onBeforeCompile = (shader) => {
+      shader.uniforms.detailMap = { value: microTex }
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\nuniform sampler2D detailMap;')
+        .replace(
+          '#include <map_fragment>',
+          '#include <map_fragment>\n' +
+          'diffuseColor.rgb = mix(diffuseColor.rgb, texture2D(detailMap, vMapUv * 110.0).rgb, 0.42);'
+        )
+    }
+    groundMat.customProgramCacheKey = () => 'ground-detail'
     const ground = new THREE.Mesh(gGeo, groundMat)
     ground.receiveShadow = true
     this.scene.add(ground)
-
-    // Micro-grain overlay: tiled nanite lattice + soil stipple floating
-    // 2 cm above the macro layer. Transparent multiply-ish veil (normal
-    // blending, mid-gray) so close-ups keep texture instead of blur.
-    const microTex = createTerrainDetailTexture()
-    microTex.repeat.set(110, 110)
-    microTex.anisotropy = maxAnisotropy
-    const microBump = createBumpTexture(microTex)
-    const microMat = new THREE.MeshStandardMaterial({
-      map: microTex,
-      bumpMap: microBump,
-      bumpScale: 0.08,
-      transparent: true,
-      opacity: 0.42,
-      roughness: 0.95,
-      metalness: 0.0,
-      depthWrite: false,
-      polygonOffset: true,
-      polygonOffsetFactor: -2
-    })
-    const micro = new THREE.Mesh(new THREE.PlaneGeometry(EXTENT, EXTENT), microMat)
-    micro.rotation.x = -Math.PI / 2
-    micro.position.y = 0.02
-    micro.receiveShadow = true
-    this.scene.add(micro)
 
     // 2. Coolant slabs: animated nanite-coolant pools flush with the grade
     this.waterTexture = createWaterTexture()
     this.waterBumpTexture = createBumpTexture(this.waterTexture)
     this.waterBumpTexture.repeat.set(3, 3)
+    // No `transmission`: any transmissive material makes three.js re-render
+    // every opaque object into a transmission target each frame it is on
+    // screen. At 0.12 it was invisible under opacity 0.88 anyway.
     const waterMat = new THREE.MeshPhysicalMaterial({
       color: 0x0b789f,
       map: this.waterTexture,
@@ -2004,9 +2083,6 @@ export class SceneRenderer {
       bumpScale: 0.08,
       roughness: 0.12,
       metalness: 0.04,
-      transmission: 0.12,
-      thickness: 0.35,
-      ior: 1.333,
       clearcoat: 1,
       clearcoatRoughness: 0.1,
       transparent: true,
@@ -2132,14 +2208,15 @@ export class SceneRenderer {
       lamp_post: new THREE.MeshStandardMaterial({ color: 0x1e242c, roughness: 0.35, metalness: 0.85 }),
       lamp_head: new THREE.MeshStandardMaterial({ color: 0xfff088, emissive: 0xffdd44, emissiveIntensity: 2.0 }),
       bollard: new THREE.MeshStandardMaterial({ map: texHazard, roughness: 0.5, metalness: 0.25 }),
-      path: new THREE.MeshPhysicalMaterial({
+      // Standard (not Physical/clearcoat): roads cover a large share of the
+      // screen and a faint clearcoat lobe at roughness 0.34 isn't worth a
+      // second specular evaluation per pixel.
+      path: new THREE.MeshStandardMaterial({
         map: texRoad,
         bumpMap: bumpRoad,
         bumpScale: 0.1,
-        roughness: 0.76,
-        metalness: 0.08,
-        clearcoat: 0.32,
-        clearcoatRoughness: 0.34
+        roughness: 0.72,
+        metalness: 0.08
       }),
       road_marking: new THREE.MeshStandardMaterial({
         color: 0xffea00,
@@ -4210,6 +4287,7 @@ export class SceneRenderer {
       p.matB.opacity = 0.55 * pulse + 0.25
     }
 
+    this.updateShadowFrustum()
     this.composer.render()
   }
 
@@ -4249,8 +4327,8 @@ export class SceneRenderer {
     }
     this.playerMeshes.clear()
     this.camera.remove(this.viewmodelFill)
-    this.gtaoPass.dispose()
-    this.bloomPass.dispose()
+    this.gtaoPass?.dispose()
+    this.bloomPass?.dispose()
     this.composer.dispose()
     this.renderer.dispose()
   }
