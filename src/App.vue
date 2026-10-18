@@ -220,7 +220,7 @@ const handleGlobalKeyUp = (e: KeyboardEvent) => {
   }
 }
 
-const initEngine = (seed: number, mode: 'solo' | 'host' | 'client') => {
+const initEngine = async (seed: number, mode: 'solo' | 'host' | 'client') => {
   if (!canvasRef.value) return
   currentMatchMode = mode
   p2pStatus.value = ''
@@ -229,7 +229,9 @@ const initEngine = (seed: number, mode: 'solo' | 'host' | 'client') => {
   isGameOver.value = false
   matchResults.value = null
 
-  sceneRenderer = new SceneRenderer(canvasRef.value)
+  // Async: the graphics layer picks its backend (WebGPU when the browser has
+  // an adapter, WebGL 2 otherwise) and initializes it before the first frame.
+  sceneRenderer = await SceneRenderer.create(canvasRef.value)
   engine = new GameEngine(
     canvasRef.value,
     sceneRenderer,
@@ -279,7 +281,7 @@ const initEngine = (seed: number, mode: 'solo' | 'host' | 'client') => {
   engine.start()
 }
 
-const handlePlayAgain = () => {
+const handlePlayAgain = async () => {
   isGameOver.value = false
   matchResults.value = null
   withdrawHostedRoom()
@@ -290,7 +292,7 @@ const handlePlayAgain = () => {
   } else if (currentMatchMode === 'host') {
     if (peerHost) {
       // PeerJS room stays open: re-init the engine on the same broker room.
-      initEngine(seed, 'host')
+      await initEngine(seed, 'host')
       engine?.setHostNetwork(peerHost)
       announceHostedRoom()
     } else {
@@ -322,7 +324,7 @@ const handleReturnToLobby = () => {
 }
 
 // Unified P2P Match (PeerJS Cloud WebRTC)
-const createPeerRoom = () => {
+const createPeerRoom = async () => {
   if (engine?.isRunning) return
   const code = generateRoomCode()
   currentRoomCode.value = code
@@ -357,7 +359,7 @@ const createPeerRoom = () => {
   )
 
   peerHost.setSeed(seed)
-  initEngine(seed, 'host')
+  await initEngine(seed, 'host')
   engine?.setHostNetwork(peerHost)
   announceHostedRoom()
 }
@@ -371,10 +373,10 @@ const joinPeerRoom = (code: string) => {
 
   peerClient = new PeerJSClient(
     roomCode,
-    (msg) => {
+    async (msg) => {
       if (msg.type === 'welcome') {
         p2pStatus.value = `P2P LINKED (ROOM: ${roomCode})`
-        initEngine(msg.seed, 'client')
+        await initEngine(msg.seed, 'client')
         engine?.setClientNetwork(peerClient!)
         engine?.handleNetworkMessage(msg)
         isConnecting.value = false
@@ -399,9 +401,9 @@ const joinPeerRoom = (code: string) => {
 }
 
 // 1. Launch Solo Mode with Bots
-const startSolo = () => {
+const startSolo = async () => {
   const seed = STATIC_MAP_SEED
-  initEngine(seed, 'solo')
+  await initEngine(seed, 'solo')
 }
 
 // 2. Host LAN via simple Host Address
@@ -474,10 +476,10 @@ const hostLan = async () => {
   }
 }
 
-const startHostMatch = () => {
+const startHostMatch = async () => {
   const seed = STATIC_MAP_SEED
   lanModal.value.show = false
-  initEngine(seed, 'host')
+  await initEngine(seed, 'host')
   engine?.setHostNetwork(p2pHost!)
 }
 
@@ -510,7 +512,7 @@ const handleJoinLan = async (hostAddress: string) => {
             return
           }
           lanModal.value.show = false
-          initEngine(msg.seed ?? STATIC_MAP_SEED, 'client')
+          await initEngine(msg.seed ?? STATIC_MAP_SEED, 'client')
           engine?.setClientNetwork(p2pClient!)
         } else if (msg.type === 'ice_candidate' && msg.candidate) {
           p2pClient!.addIceCandidate(msg.candidate)

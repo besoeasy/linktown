@@ -1,16 +1,13 @@
-import * as THREE from 'three'
-import { Sky } from 'three/addons/objects/Sky.js'
+import * as THREE from 'three/webgpu'
+import { attribute, float, mix, texture as textureNode, uv } from 'three/tsl'
+import { SkyMesh } from 'three/addons/objects/SkyMesh.js'
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
-import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
-import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
-import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js'
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import type { MapData, Box } from './map'
 import { groundHeight } from './map'
 import type { PlayerState, NaniteCache, JumpPad, Portal } from '../net/types'
 import { CFG, CORE_DETAILS } from './config'
+import { createGfx, type Gfx } from './gfx'
 import { PerfOverlay, isPerfOverlayEnabled } from './perfOverlay'
 import { sound } from './audio'
 
@@ -1275,39 +1272,6 @@ function fxAdditiveMat(color: number, opacity: number): THREE.MeshBasicMaterial 
 }
 
 /**
- * Graphics quality presets. Picked via `?gfx=low|medium|high` (persisted to
- * localStorage) — defaults to medium. Each frame the GPU runs: shadow pass,
- * main pass, optional GTAO (re-renders the scene for normals + AO + denoise),
- * optional bloom chain, output. These knobs scale the expensive parts.
- */
-export type GfxQuality = 'low' | 'medium' | 'high'
-const GFX_PRESETS: Record<GfxQuality, {
-  maxPixelRatio: number
-  msaa: number
-  shadowMap: number
-  gtao: boolean
-  bloom: boolean
-}> = {
-  low: { maxPixelRatio: 1, msaa: 0, shadowMap: 1024, gtao: false, bloom: false },
-  medium: { maxPixelRatio: 1, msaa: 4, shadowMap: 2048, gtao: false, bloom: true },
-  high: { maxPixelRatio: 1.5, msaa: 4, shadowMap: 2048, gtao: true, bloom: true }
-}
-
-export function getGfxQuality(): GfxQuality {
-  const isQ = (v: unknown): v is GfxQuality => v === 'low' || v === 'medium' || v === 'high'
-  try {
-    const fromUrl = new URLSearchParams(window.location.search).get('gfx')
-    if (isQ(fromUrl)) {
-      localStorage.setItem('ltown_gfx', fromUrl)
-      return fromUrl
-    }
-    const stored = localStorage.getItem('ltown_gfx')
-    if (isQ(stored)) return stored
-  } catch { /* storage unavailable */ }
-  return 'medium'
-}
-
-/**
  * Remote-player chassis rendering.
  *
  * Each RX-11 shell is built from ~50 small primitives across 12 animated
@@ -1327,18 +1291,15 @@ const playerWeaponMat = new THREE.MeshStandardMaterial({ color: 0x181e26, roughn
 const playerChamberMat = new THREE.MeshBasicMaterial({ color: 0x080b10 })
 const chassisTagMats = new Set<THREE.Material>([playerArmorMat, playerTrimMat, playerJointMat, playerWeaponMat])
 
-/** One material for every player's neutral chassis; PBR params come per vertex. */
-const chassisMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 1 })
-chassisMat.onBeforeCompile = (shader) => {
-  shader.vertexShader = shader.vertexShader
-    .replace('#include <common>', '#include <common>\nattribute vec2 pbr;\nvarying vec2 vPbr;')
-    .replace('#include <begin_vertex>', '#include <begin_vertex>\nvPbr = pbr;')
-  shader.fragmentShader = shader.fragmentShader
-    .replace('#include <common>', '#include <common>\nvarying vec2 vPbr;')
-    .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = vPbr.x;')
-    .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nmetalnessFactor = vPbr.y;')
+/** One material for every player's neutral chassis; PBR params come per vertex.
+ *  Node material: mergeParts() bakes a `pbr` (roughness, metalness) attribute
+ *  alongside per-vertex color, so all chassis surfaces batch into one draw. */
+const chassisMat = new THREE.MeshStandardNodeMaterial({ vertexColors: true })
+{
+  const pbr = attribute('pbr', 'vec2')
+  chassisMat.roughnessNode = pbr.x
+  chassisMat.metalnessNode = pbr.y
 }
-chassisMat.customProgramCacheKey = () => 'chassis-pbr'
 
 /** Materials shared across players — never disposed with a player. */
 const sharedPlayerMats = new Set<THREE.Material>([...chassisTagMats, playerChamberMat, chassisMat])
@@ -1431,7 +1392,13 @@ const SUN_DIR = new THREE.Vector3(170, 95, 55).normalize()
 export class SceneRenderer {
   public scene: THREE.Scene
   public camera: THREE.PerspectiveCamera
-  public renderer: THREE.WebGLRenderer
+  /** Graphics layer: backend (WebGPU / WebGL 2), post stack, adaptive scale. */
+  public gfx!: Gfx
+
+  /** The underlying renderer (debugging / tooling). */
+  public get renderer(): THREE.WebGPURenderer {
+    return this.gfx.renderer
+  }
   private playerMeshes = new Map<number, THREE.Group>()
   private clouds: THREE.Sprite[] = []
   private cloudTexture?: THREE.CanvasTexture
@@ -1539,107 +1506,60 @@ export class SceneRenderer {
     matB: THREE.MeshBasicMaterial
     phase: number
   }>()
-  private composer!: EffectComposer
-  private gtaoPass?: GTAOPass
-  private bloomPass?: UnrealBloomPass
   private viewmodelFill!: THREE.PointLight
   private sun!: THREE.DirectionalLight
-  private readonly quality: GfxQuality
   private perf?: PerfOverlay
   // Scratch vectors for the camera-following shadow frustum (no per-frame alloc)
   private readonly shadowRight = new THREE.Vector3()
   private readonly shadowUp = new THREE.Vector3()
   private readonly shadowCenter = new THREE.Vector3()
 
-  constructor(canvas: HTMLCanvasElement) {
-    this.quality = getGfxQuality()
-    const gfx = GFX_PRESETS[this.quality]
-    const pixelRatio = Math.min(window.devicePixelRatio, gfx.maxPixelRatio)
-
+  private constructor(canvas: HTMLCanvasElement) {
     this.scene = new THREE.Scene()
     // Atmospheric daytime depth haze (bright sky blue)
     this.scene.fog = new THREE.FogExp2(0x7ab0d0, 0.00055)
 
+    // Canvas AA is off: the frame is produced by the post stack (multisampled
+    // scene pass render target), so a multisampled default framebuffer is
+    // pure waste.
     this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.05, 1800)
-    // Canvas AA is off: the frame is produced by the composer (MSAA render
-    // target), so a multisampled default framebuffer is pure waste.
-    this.renderer = new THREE.WebGLRenderer({
-      canvas,
-      antialias: false,
-      powerPreference: 'high-performance'
-    })
-    this.renderer.setPixelRatio(pixelRatio)
-    this.renderer.setSize(window.innerWidth, window.innerHeight)
-    this.renderer.shadowMap.enabled = true
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    this.renderer.toneMappingExposure = 1.05
-    this.renderer.outputColorSpace = THREE.SRGBColorSpace
+    void canvas
+  }
+
+  /**
+   * Builds the renderer, post stack and scene graph. Async because the WebGPU
+   * backend must be initialized (`renderer.init()`) before the first frame —
+   * rendering before init is what made the earlier WebGPU attempt stutter.
+   */
+  static async create(canvas: HTMLCanvasElement): Promise<SceneRenderer> {
+    const sr = new SceneRenderer(canvas)
+    const gfx = (sr.gfx = await createGfx(canvas, sr.scene, sr.camera))
 
     // Image-based lighting: neutral studio env for PBR reflections on
     // metals/armor. Kept subtle so the daylight art direction stays intact.
-    const pmrem = new THREE.PMREMGenerator(this.renderer)
-    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture
-    this.scene.environmentIntensity = 0.55
+    const pmrem = new THREE.PMREMGenerator(gfx.renderer)
+    sr.scene.environment = (await pmrem.fromSceneAsync(new RoomEnvironment(), 0.04)).texture
+    sr.scene.environmentIntensity = 0.55
     pmrem.dispose()
 
-    // Post stack: HDR render -> [GTAO contact darkening] -> [subtle bloom
-    // (emissives only)] -> tonemap/sRGB. Bracketed passes depend on the
-    // quality preset. MSAA target keeps edges crisp (canvas AA is off).
-    const size = new THREE.Vector2(window.innerWidth, window.innerHeight)
-    const msaaTarget = new THREE.WebGLRenderTarget(size.x, size.y, {
-      type: THREE.HalfFloatType,
-      samples: gfx.msaa
-    })
-    this.composer = new EffectComposer(this.renderer, msaaTarget)
-    this.composer.setPixelRatio(pixelRatio)
-    this.composer.setSize(size.x, size.y)
-    this.composer.addPass(new RenderPass(this.scene, this.camera))
-
-    // Screen-space ground truth occlusion adds the contact darkening that a
-    // single directional shadow map cannot resolve under cover and between
-    // small props. It re-renders the whole scene for normals/depth, so it is
-    // high-preset only, with halved sample counts (8/8 instead of 16/16).
-    if (gfx.gtao) {
-      this.gtaoPass = new GTAOPass(this.scene, this.camera, size.x, size.y)
-      this.gtaoPass.updateGtaoMaterial({
-        radius: 0.72,
-        distanceExponent: 1,
-        thickness: 1,
-        scale: 1,
-        samples: 8,
-        screenSpaceRadius: false
-      })
-      this.gtaoPass.updatePdMaterial({ samples: 8 })
-      this.gtaoPass.output = GTAOPass.OUTPUT.Default
-      this.gtaoPass.blendIntensity = 0.72
-      this.gtaoPass.pdSamples = 8
-      this.composer.addPass(this.gtaoPass)
-    }
-
-    if (gfx.bloom) {
-      this.bloomPass = new UnrealBloomPass(size, 0.32, 0.52, 1.05)
-      this.composer.addPass(this.bloomPass)
-    }
-    this.composer.addPass(new OutputPass())
-
-    this.setupSky()
-    this.setupLighting(gfx.shadowMap)
-    this.setupCosmos()
-    this.setupClouds()
+    sr.setupSky()
+    sr.setupLighting(gfx.preset.shadowMap)
+    sr.setupCosmos()
+    sr.setupClouds()
 
     // Add camera to scene graph so camera children (robot arm, FP shield) render in camera space.
     // A short-range local bounce keeps the dark titanium readable without flattening world lighting.
-    this.scene.add(this.camera)
-    this.viewmodelFill = new THREE.PointLight(0xd7e8ff, 0.85, 2.4, 2)
-    this.viewmodelFill.position.set(-0.18, 0.2, 0.08)
-    this.camera.add(this.viewmodelFill)
-    this.setupRobotArm()
-    this.setupFirstPersonShield()
+    sr.scene.add(sr.camera)
+    sr.viewmodelFill = new THREE.PointLight(0xd7e8ff, 0.85, 2.4, 2)
+    sr.viewmodelFill.position.set(-0.18, 0.2, 0.08)
+    sr.camera.add(sr.viewmodelFill)
+    sr.setupRobotArm()
+    sr.setupFirstPersonShield()
 
-    if (isPerfOverlayEnabled()) this.perf = new PerfOverlay(this.renderer, this.quality)
+    if (isPerfOverlayEnabled()) sr.perf = new PerfOverlay(gfx)
 
-    window.addEventListener('resize', this.onResize)
+    window.addEventListener('resize', sr.onResize)
+    return sr
   }
 
   /**
@@ -1665,8 +1585,7 @@ export class SceneRenderer {
   private onResize = () => {
     this.camera.aspect = window.innerWidth / window.innerHeight
     this.camera.updateProjectionMatrix()
-    this.renderer.setSize(window.innerWidth, window.innerHeight)
-    this.composer.setSize(window.innerWidth, window.innerHeight)
+    this.gfx.setSize(window.innerWidth, window.innerHeight)
   }
 
   private setupRobotArm() {
@@ -2001,20 +1920,20 @@ export class SceneRenderer {
   }
 
   private setupSky() {
-    // Procedural sky (Preetham atmospheric model)
-    const sky = new Sky()
+    // Procedural sky (Preetham atmospheric model). SkyMesh is the node-material
+    // variant of the classic Sky addon — required by WebGPURenderer.
+    const sky = new SkyMesh()
     sky.scale.setScalar(10000)
+    sky.material.fog = false
     this.scene.add(sky)
 
-    const skyU = sky.material.uniforms as any
-    skyU['turbidity'].value = 2.5
-    skyU['rayleigh'].value = 0.7
-    skyU['mieCoefficient'].value = 0.002
-    skyU['mieDirectionalG'].value = 0.65
+    sky.turbidity.value = 2.5
+    sky.rayleigh.value = 0.7
+    sky.mieCoefficient.value = 0.002
+    sky.mieDirectionalG.value = 0.65
 
     // Sun direction aligned with primary sun directional light (late-afternoon angle)
-    const sunPos = new THREE.Vector3(170, 95, 55).normalize()
-    skyU['sunPosition'].value.copy(sunPos)
+    sky.sunPosition.value.copy(SUN_DIR)
   }
 
   private setupLighting(shadowMapSize: number) {
@@ -2139,7 +2058,7 @@ export class SceneRenderer {
   buildMapGeometry(map: MapData) {
     const SIZE = map.floor.w
     const EXTENT = SIZE + 80 // ground plane spans the arena + horizon skirt
-    const maxAnisotropy = Math.min(8, (this.renderer as any).capabilities?.getMaxAnisotropy?.() ?? 4)
+    const maxAnisotropy = this.gfx.getMaxAnisotropy()
 
     // 1. Layered ground: macro albedo (world-mapped, 1:1) + roughness zones
     //    + tiled micro-grain overlay. Two layers because one 1024 canvas
@@ -2160,8 +2079,7 @@ export class SceneRenderer {
     const groundRough = createGroundRoughness(EXTENT)
     const groundBump = createBumpTexture(groundAlbedo)
     groundBump.anisotropy = maxAnisotropy
-    const groundMat = new THREE.MeshStandardMaterial({
-      map: groundAlbedo,
+    const groundMat = new THREE.MeshStandardNodeMaterial({
       roughnessMap: groundRough,
       roughness: 1.0,
       bumpMap: groundBump,
@@ -2170,22 +2088,18 @@ export class SceneRenderer {
       envMapIntensity: 0.5
     })
     // Micro-grain detail: tiled nanite lattice + soil stipple blended into
-    // the ground albedo in the same shader pass. (Previously a separate
+    // the ground albedo in the same pass. (Previously a separate
     // transparent full-arena PBR plane, which shaded every ground pixel
     // twice.) Same 42% blend over the macro layer, tiled 110x.
+    // Node-material equivalent of the old onBeforeCompile GLSL injection —
+    // `onBeforeCompile` does not exist on the WebGPU backend.
     const microTex = createTerrainDetailTexture()
     microTex.anisotropy = maxAnisotropy
-    groundMat.onBeforeCompile = (shader) => {
-      shader.uniforms.detailMap = { value: microTex }
-      shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', '#include <common>\nuniform sampler2D detailMap;')
-        .replace(
-          '#include <map_fragment>',
-          '#include <map_fragment>\n' +
-          'diffuseColor.rgb = mix(diffuseColor.rgb, texture2D(detailMap, vMapUv * 110.0).rgb, 0.42);'
-        )
+    {
+      const macro = textureNode(groundAlbedo, uv())
+      const micro = textureNode(microTex, uv().mul(110))
+      groundMat.colorNode = mix(macro.rgb, micro.rgb, float(0.42))
     }
-    groundMat.customProgramCacheKey = () => 'ground-detail'
     const ground = new THREE.Mesh(gGeo, groundMat)
     ground.receiveShadow = true
     this.scene.add(ground)
@@ -4404,7 +4318,7 @@ export class SceneRenderer {
 
     this.updateShadowFrustum()
     this.perf?.gpuBegin()
-    this.composer.render()
+    this.gfx.renderFrame(dt)
     this.perf?.frameEnd()
   }
 
@@ -4438,9 +4352,6 @@ export class SceneRenderer {
     this.playerMeshes.clear()
     this.camera.remove(this.viewmodelFill)
     this.perf?.dispose()
-    this.gtaoPass?.dispose()
-    this.bloomPass?.dispose()
-    this.composer.dispose()
-    this.renderer.dispose()
+    this.gfx.dispose()
   }
 }

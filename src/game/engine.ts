@@ -1200,7 +1200,7 @@ export class GameEngine {
     return false
   }
 
-  private renderLoop = (time: number) => {
+  private renderLoop = async (time: number) => {
     if (!this.isRunning) return
     const dt = Math.min(0.1, (time - this.lastFrameTime) / 1000)
     this.lastFrameTime = time
@@ -1355,7 +1355,11 @@ export class GameEngine {
     const shieldFrac = this.localPlayer.shieldActive
       ? Math.max(0, Math.min(1, (this.localPlayer.shieldEnd - Date.now()) / CFG.SHIELD_DURATION))
       : 1
-    this.scene.render(dt, isMoving, this.localPlayer.superActive, this.localPlayer.shieldActive, this.localPlayer.crouching, shieldFrac)
+    // Single-flight: the frame is submitted before the next RAF is scheduled
+    // (the requestAnimationFrame call at the end of this async loop), so the
+    // WebGPU backend never has two frames in flight at once — the invariant
+    // the earlier fire-and-forget render loop broke.
+    await this.scene.render(dt, isMoving, this.localPlayer.superActive, this.localPlayer.shieldActive, this.localPlayer.crouching, shieldFrac)
 
     // Calculate rolling FPS
     this.frameCount++

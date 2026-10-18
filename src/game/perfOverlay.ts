@@ -1,14 +1,15 @@
-import type * as THREE from 'three'
+import type { Gfx } from './gfx'
 
 /**
  * Debug performance overlay, enabled with `?debug=1`.
  *
  * Shows per-frame totals across *all* passes (shadow, main, post):
- * draw calls, triangles, live geometries/textures/programs, CPU time spent
- * in SceneRenderer.render(), frame interval, and GPU time measured with
- * EXT_disjoint_timer_query_webgl2 when the browser exposes it. GPU time is
- * the honest number: FPS is capped by vsync and hides how much headroom
- * is left.
+ * backend in use, draw calls, triangles, live geometries/textures, CPU time
+ * spent in SceneRenderer.render(), frame interval, and GPU frame time
+ * (WebGPU timestamp queries or EXT_disjoint_timer_query_webgl2 on the WebGL 2
+ * backend — measured in gfx.ts, which also uses it for the adaptive render
+ * scale). GPU time is the honest number: FPS is capped by vsync and hides how
+ * much headroom is left.
  */
 export function isPerfOverlayEnabled(): boolean {
   try {
@@ -22,10 +23,6 @@ const SAMPLE_WINDOW_MS = 250
 
 export class PerfOverlay {
   private el: HTMLDivElement
-  private gl: WebGL2RenderingContext | null
-  private timerExt: any = null
-  private pendingQueries: WebGLQuery[] = []
-  private activeQuery: WebGLQuery | null = null
 
   private frameStartMs = 0
   private lastFrameStartMs = 0
@@ -39,15 +36,12 @@ export class PerfOverlay {
   private trisMax = 0
   private windowStart = performance.now()
 
-  constructor(private renderer: THREE.WebGLRenderer, private quality: string) {
-    // Count every render() the composer issues per frame, reset manually.
-    renderer.info.autoReset = false
-
-    const ctx = renderer.getContext()
-    this.gl = typeof WebGL2RenderingContext !== 'undefined' && ctx instanceof WebGL2RenderingContext ? ctx : null
-    if (this.gl) this.timerExt = this.gl.getExtension('EXT_disjoint_timer_query_webgl2')
+  constructor(private gfx: Gfx) {
+    // Count every render the post stack issues per frame, reset manually.
+    gfx.renderer.info.autoReset = false
 
     this.el = document.createElement('div')
+    this.el.id = 'perf-overlay'
     Object.assign(this.el.style, {
       position: 'fixed',
       // Left edge under the frags/clock panels, clear of the bottom HUD
@@ -73,31 +67,26 @@ export class PerfOverlay {
     this.frameStartMs = now
   }
 
-  /** Call right before the composer renders. */
+  /** Call right before the frame is submitted. */
   gpuBegin() {
-    this.renderer.info.reset()
-    this.pollQueries()
-    const gl = this.gl
-    if (gl && this.timerExt && !this.activeQuery) {
-      const q = gl.createQuery()
-      if (q) {
-        gl.beginQuery(this.timerExt.TIME_ELAPSED_EXT, q)
-        this.activeQuery = q
-      }
+    this.gfx.renderer.info.reset()
+    // gfx resolves GPU frame times a few frames late; sample the latest.
+    const gpu = this.gfx.gpuTimeMs
+    if (gpu !== null) {
+      this.gpuMsSum += gpu
+      this.gpuSamples++
     }
   }
 
-  /** Call right after the composer renders. */
+  /** Call right after the frame is submitted. */
   frameEnd() {
-    const gl = this.gl
-    if (gl && this.timerExt && this.activeQuery) {
-      gl.endQuery(this.timerExt.TIME_ELAPSED_EXT)
-      this.pendingQueries.push(this.activeQuery)
-      this.activeQuery = null
-    }
-
-    const info = this.renderer.info
-    this.callsMax = Math.max(this.callsMax, info.render.calls)
+    const info = this.gfx.renderer.info
+    // WebGPU counts render passes in `render.calls` (a lifetime counter) and
+    // per-frame draws in `render.drawCalls`; WebGL only has `render.calls`
+    // (per-frame draws). Prefer the per-frame number.
+    const render = info.render as { calls: number; drawCalls?: number }
+    const calls = typeof render.drawCalls === 'number' ? render.drawCalls : render.calls
+    this.callsMax = Math.max(this.callsMax, calls)
     this.trisMax = Math.max(this.trisMax, info.render.triangles)
     this.cpuMsSum += performance.now() - this.frameStartMs
     this.frames++
@@ -106,46 +95,29 @@ export class PerfOverlay {
     if (now - this.windowStart >= SAMPLE_WINDOW_MS) this.flush(now)
   }
 
-  /** Collect finished GPU timer queries (results arrive a few frames late). */
-  private pollQueries() {
-    const gl = this.gl
-    if (!gl || !this.timerExt) return
-    const disjoint = gl.getParameter(this.timerExt.GPU_DISJOINT_EXT)
-    while (this.pendingQueries.length > 0) {
-      const q = this.pendingQueries[0]
-      if (!gl.getQueryParameter(q, gl.QUERY_RESULT_AVAILABLE)) break
-      const ns = gl.getQueryParameter(q, gl.QUERY_RESULT) as number
-      if (!disjoint) {
-        this.gpuMsSum += ns / 1e6
-        this.gpuSamples++
-      }
-      gl.deleteQuery(q)
-      this.pendingQueries.shift()
-    }
-    // Never let a stalled driver grow the queue unbounded
-    while (this.pendingQueries.length > 8) gl.deleteQuery(this.pendingQueries.shift()!)
-  }
-
   private flush(now: number) {
     const n = Math.max(1, this.frames)
     const interval = this.intervalMsSum / n
-    const info = this.renderer.info
-    const gpu = !this.timerExt
-      ? 'n/a (no timer ext)'
-      : this.gpuSamples > 0 ? `${(this.gpuMsSum / this.gpuSamples).toFixed(2)} ms` : '…'
-    const pr = this.renderer.getPixelRatio()
-    const w = Math.round(window.innerWidth * pr)
-    const h = Math.round(window.innerHeight * pr)
+    const info = this.gfx.renderer.info
+    const gpu = this.gpuSamples > 0
+      ? `${(this.gpuMsSum / this.gpuSamples).toFixed(2)} ms`
+      : 'n/a (no timestamp support)'
 
-    this.el.textContent =
-      `gfx       ${this.quality}  ${w}x${h} @${pr.toFixed(2)}x\n` +
-      `fps       ${interval > 0 ? (1000 / interval).toFixed(0) : '—'}  (${interval.toFixed(2)} ms/frame)\n` +
-      `gpu       ${gpu}\n` +
-      `cpu       ${(this.cpuMsSum / n).toFixed(2)} ms  (scene.render)\n` +
-      `calls     ${this.callsMax}\n` +
-      `tris      ${(this.trisMax / 1000).toFixed(1)}k\n` +
-      `geo/tex   ${info.memory.geometries} / ${info.memory.textures}\n` +
-      `programs  ${info.programs?.length ?? 0}`
+    const lines = [
+      `gfx       ${this.gfx.kind}  ${this.gfx.quality}  ${this.gfx.drawWidth}x${this.gfx.drawHeight} @${this.gfx.pixelRatio.toFixed(2)}x`,
+      `fps       ${interval > 0 ? (1000 / interval).toFixed(0) : '—'}  (${interval.toFixed(2)} ms/frame)`,
+      `gpu       ${gpu}`,
+      `cpu       ${(this.cpuMsSum / n).toFixed(2)} ms  (scene.render)`,
+      `calls     ${this.callsMax}`,
+      `tris      ${(this.trisMax / 1000).toFixed(1)}k`,
+      `geo/tex   ${info.memory.geometries} / ${info.memory.textures}`
+    ]
+    if (this.gfx.renderScale < 1) lines.push(`scale     ${this.gfx.renderScale.toFixed(2)}x  (adaptive)`)
+    // `programs` only exists on the WebGL 2 backend's info object.
+    const programs = (info as { programs?: unknown[] }).programs
+    if (programs) lines.push(`programs  ${programs.length}`)
+
+    this.el.textContent = lines.join('\n')
 
     this.frames = 0
     this.cpuMsSum = 0
@@ -158,13 +130,7 @@ export class PerfOverlay {
   }
 
   dispose() {
-    const gl = this.gl
-    if (gl) {
-      if (this.activeQuery) gl.deleteQuery(this.activeQuery)
-      for (const q of this.pendingQueries) gl.deleteQuery(q)
-    }
-    this.pendingQueries = []
-    this.renderer.info.autoReset = true
+    this.gfx.renderer.info.autoReset = true
     this.el.remove()
   }
 }
