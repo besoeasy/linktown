@@ -2,6 +2,8 @@
 
 # LINKTOWN
 
+[![Star History Rank](https://api.star-history.com/badge?repo=besoeasy/linktown&type=rank)](https://www.star-history.com/besoeasy/linktown)
+
 A 3D multiplayer browser game rendered with Three.js.
 
 ## Lore
@@ -44,3 +46,8 @@ Example: `?gfx=high&debug=1` for the full look with the overlay, or
 npm run build
 npm run preview
 ```
+
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/chart?repos=besoeasy/linktown&type=date&legend=top-left)](https://www.star-history.com/?repos=besoeasy%2Flinktown&type=date&legend=top-left)
