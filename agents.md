@@ -13,7 +13,7 @@ This justifies: no loadouts, no upgrades, death is cheap, score = resume.
 
 Lore rule:
 
-> Hull = nanite count: fuel, function, and mass at once. Fire, jumps, shields spend nanites. Survive 3s calm — no hits taken, no nanites spent — core rebuilds 1 hull/s — 3x crouched behind cover. Any spend or wound restarts clock. Destroyed swarms reprint whole after 7s. Destroyed swarms eject +100 cache.
+> Hull = nanite count: fuel, function, and mass at once. Fire, jumps, shields spend nanites. Survive 3s calm — no hits taken, no nanites spent — core rebuilds 4 hull/s — 3x crouched behind cover. Any spend or wound restarts clock. Destroyed swarms reprint whole after 7s. Destroyed swarms eject +100 cache that decays after 25s.
 
 Rules:
 
@@ -29,30 +29,30 @@ Design intent: aggression drains you, passivity restores you, but too slow to tu
 | Source | Value |
 |---|---|
 | Spawn / reprint | 500 full |
-| Calm regen standing/moving | 1/s after 3s calm |
-| Calm regen crouched | 3/s after 3s calm, stationary lock, auto-crouch after 5s idle |
-| Nanite cache salvage | +100, pickup radius 5u, closest alive shell wins, capped at 500 |
+| Calm regen standing/moving | 4/s after 3s calm |
+| Calm regen crouched | 12/s after 3s calm, stationary lock, auto-crouch after 5s idle |
+| Nanite cache salvage | +100, pickup radius 5u, closest alive shell wins, capped at 500, expires after 25s |
 
-Caches are the only map-spawned income. One death = one 100 cache at death pos. No passive map pickups otherwise.
+Caches are the only map-spawned income. One death = one 100 cache at death pos. Caches decay after 25s if unclaimed. No passive map pickups otherwise.
 
 ## 4. Costs / Outflows (how you lose hull)
 
 | Sink | Cost | Notes |
 |---|---|---|
-| Hitscan shot | -2 per shot, 100ms interval = max 20/s drain |
-| Cannot fire | blocked at 2 hull or less |
+| Hitscan shot | -3 per shot, 100ms interval = max 30/s drain |
+| Cannot fire | blocked at 3 hull or less |
 | Super (E) | -50, requires 51+, 10s 3x dmg + 2x speed, blocks shield |
 | Shield (R) | -80, requires 81+, 10s full immunity, trigger dead while up (projector hand) |
-| Super Jump | -20 |
-| Normal jump | 0 currently, free verticality via pads |
+| Super Jump (Shift+Space) | -20, high launch |
+| Normal jump (Space) | 0, free verticality via pads |
 | Base damage taken | 20 per hit, falloff with distance, min 25% |
 | Super damage taken | 60 per hit at point blank (20x3) |
 
 Math:
-* 500 hull = 250 shots max if never hit.
+* 500 hull = 166 shots max if never hit.
 * TTK point blank: 25 hits = 2.5s hold-fire. At 60u+: falloff ~0.6x = ~41 hits.
 * Firing 10/s while taking 20/hit means you lose net hull fast — forces 3s disengage to regen.
-* Regen is weak in-fight (1/s vs 20 dmg), strong between fights if you crouch (3/s = 180 to full from 320 in 60s, or cache +100 instant).
+* Regen is weak in-fight (4/s vs 20 dmg), strong between fights if you crouch (12/s = 180 to full from 320 in 15s, or cache +100 instant).
 
 ## 5. Chassis Actions (single RX-11 loadout)
 
@@ -61,7 +61,7 @@ All pilots use the same chassis and actions. No character picks, no class abilit
 * **Fire (LMB):** hitscan shot, -2 hull per shot.
 * **Super (E):** -50 hull, 10s of 3x damage + 2x speed. Blocks shield while active.
 * **Shield (R):** -80 hull, 10s full immunity. Firing disabled while shield is up. Blocked while Super is active.
-* **Jump (Space):** normal jump; Super Jump costs -20 hull.
+* **Jump (Space):** normal jump; **Super Jump (Shift+Space):** -20 hull for a high launch.
 * **Crouch (C):** stationary, 3x hull regen after calm period.
 
 ## 6. Time & Score Economy
@@ -84,7 +84,8 @@ Loop: spend hull to frag -> drop cache -> winner siphons 100 -> snowball -> vict
 
 ## 8. What to Watch When Porting / Tuning
 
-1. Regen 1/s is too slow to matter in 10-min PC pace — consider 4-6/s base.
-2. Shot cost 2 is negligible vs 20 dmg — raise to make spam hurt, or keep as anti-hold-fire only.
-3. Cache 100 is 20% max — strong snowball. Cap siphon or decay over time.
+1. ~~Regen 1/s is too slow~~ — raised to 4/s base (12/s crouched). Revisit if fights become too attrition-heavy.
+2. ~~Shot cost 2 is negligible~~ — raised to 3. Watch whether sustained fire feels too punishing at low hull.
+3. ~~Cache 100 snowball~~ — caches now expire after 25s. Still 100 hull; consider decay-over-time or diminishing returns if snowball persists.
 4. Free mobility (pads/portals) can break hull-as-fuel fantasy — add small hull toll if strict.
+5. Bots now use Super/Shield and aim-gated firing; monitor for difficulty spikes in solo and ensure bot ability use reads clearly.

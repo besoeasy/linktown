@@ -28,6 +28,7 @@ export interface NaniteCache {
   y: number
   z: number
   amount: number
+  expiresAt: number
 }
 
 export interface JumpPad {

@@ -186,8 +186,27 @@ export class GameEngine {
     }
   }
 
-  public getRandomSpawn(): { x: number; y: number; z: number; yaw: number } {
-    return getRandomSpawn(this.map)
+  public getRandomSpawn(excludeId?: number): { x: number; y: number; z: number; yaw: number } {
+    const spawns = this.map.spawns
+    if (!spawns || spawns.length === 0) return { x: 0, y: 1.6, z: 0, yaw: Math.random() * Math.PI * 2 }
+
+    const enemies = [...this.players.values()].filter(p => p.alive && p.id !== excludeId)
+    if (enemies.length === 0) {
+      const s = spawns[Math.floor(Math.random() * spawns.length)]
+      return { x: s.x, y: s.y, z: s.z, yaw: Math.random() * Math.PI * 2 }
+    }
+
+    // Prefer spawns far from living enemies to reduce instant spawn deaths.
+    const scored = spawns.map(s => {
+      let minDist = Infinity
+      for (const e of enemies) minDist = Math.min(minDist, Math.hypot(s.x - e.x, s.z - e.z))
+      return { s, minDist }
+    })
+    scored.sort((a, b) => b.minDist - a.minDist)
+    const safe = scored.filter(c => c.minDist >= 30)
+    const pool = safe.length >= 3 ? safe : scored.slice(0, Math.max(3, Math.ceil(scored.length / 3)))
+    const pick = pool[Math.floor(Math.random() * pool.length)].s
+    return { x: pick.x, y: pick.y, z: pick.z, yaw: Math.random() * Math.PI * 2 }
   }
 
   public allocateSpawnForPeer(peerId: number): { x: number; y: number; z: number; yaw: number } {
@@ -403,7 +422,18 @@ export class GameEngine {
     const onGround = this.isOnGround(this.localPlayer)
     if (!onGround) return
 
-    // Single jump — no modifiers. Verticality comes from jump pads.
+    // Shift+Space = Super Jump: costs hull for a much higher launch.
+    if (this.keys['shift'] && this.localPlayer.health > CFG.SUPER_JUMP_COST) {
+      this.localPlayer.health -= CFG.SUPER_JUMP_COST
+      this.markHullSpent(this.localPlayer)
+      this.vy = CFG.SUPER_JUMP_SPEED
+      sound.playSuperJump()
+      if (this.mode === 'client') {
+        this.client?.send({ type: 'jump_super' })
+      }
+      return
+    }
+
     this.vy = CFG.JUMP_SPEED
     if (this.mode === 'client') {
       this.client?.send({ type: 'jump' })
@@ -633,7 +663,7 @@ export class GameEngine {
 
   public spawnNaniteCache(x: number, y: number, z: number, amount: number): NaniteCache {
     const id = this.nextCacheId++
-    const cache: NaniteCache = { id, x, y, z, amount }
+    const cache: NaniteCache = { id, x, y, z, amount, expiresAt: Date.now() + CFG.NANITE_CACHE_LIFETIME }
     this.naniteCaches.set(id, cache)
     this.scene.addNaniteCache(cache)
     return cache
@@ -799,6 +829,7 @@ export class GameEngine {
         dt,
         (bot, target) => {
           // Bots run the same hull economy as humans: no nanites, no shot.
+          if (bot.shieldActive && now < bot.shieldEnd) return
           if (bot.health <= CFG.SHOT_COST_SINGLE) return
           bot.health -= CFG.SHOT_COST_SINGLE
           bot.lastDamageAt = now
@@ -807,11 +838,12 @@ export class GameEngine {
           const dz = target.z - bot.z
           const len = Math.hypot(dx, dy, dz)
           if (len > 0) {
+            const superMult = bot.superActive ? CFG.SUPER_MULT : 1
             // Visible projectile for bot shot
-            this.scene.spawnProjectile(bot.x, bot.y + 1.2, bot.z, dx / len, dy / len, dz / len, false)
+            this.scene.spawnProjectile(bot.x, bot.y + 1.2, bot.z, dx / len, dy / len, dz / len, bot.superActive)
             const hit = raycastPlayers(bot.id, bot.x, bot.y + 1.2, bot.z, dx / len, dy / len, dz / len, targets, this.map, this.nearbyBoxes)
             if (hit) {
-              this.applyDamage(hit.id, CFG.DMG_SINGLE * 0.5, bot.id)
+              this.applyDamage(hit.id, CFG.DMG_SINGLE * 0.5 * superMult, bot.id)
             }
           }
         },
@@ -870,7 +902,7 @@ export class GameEngine {
     for (const p of this.players.values()) {
       if (!p.alive) {
         if (p.respawnAt > 0 && now >= p.respawnAt) {
-          const s = this.getRandomSpawn()
+          const s = this.getRandomSpawn(p.id)
           p.x = s.x
           p.y = s.y
           p.z = s.z
@@ -922,6 +954,14 @@ export class GameEngine {
       if (p.invisible && p.cloakEnd && now >= p.cloakEnd) {
         p.invisible = false
         p.cloakEnd = 0
+      }
+    }
+
+    // Expire stale nanite caches to limit snowballing
+    for (const [id, cache] of [...this.naniteCaches.entries()]) {
+      if (now >= cache.expiresAt) {
+        this.naniteCaches.delete(id)
+        this.scene.removeNaniteCache(id, false)
       }
     }
 

@@ -25,8 +25,8 @@ export const CFG = {
   AUTO_CROUCH_MS: 5000,     // Auto-crouch after 5s of no movement
   MAX_HEALTH: 500,          // Hull = nanite census (lore.md:23)
   REGEN_DELAY: 3000,        // Calm period (no damage taken, no hull spent) before hull rebuild starts
-  REGEN_RATE: 1,            // Hull rebuilt per second once the calm period completes
-  SHOT_COST_SINGLE: 2,      // Nanite mass spent per single shot
+  REGEN_RATE: 4,            // Hull rebuilt per second once the calm period completes
+  SHOT_COST_SINGLE: 3,      // Nanite mass spent per single shot
   FIRE_INTERVAL_MS: 100,    // Min gap between shots (10 shots/sec max)
   CHARGE_MAX: 4,            // Max charge shot bursts
   SUPER_COST: 50,           // Nanite mass spent to trigger Super overclock
@@ -34,6 +34,7 @@ export const CFG = {
   RESPAWN_DELAY: 7000,      // 7s reprint delay
   NANITE_CACHE_AMOUNT: 100, // Nanite cache dropped on death
   NANITE_CACHE_RADIUS: 5.0, // Pickup radius in world units
+  NANITE_CACHE_LIFETIME: 25000, // Caches decay after 25s to limit snowballing
   JUMP_PAD_COUNT: 6,        // Maximum concurrent active dynamic jump pads
   JUMP_PAD_LIFETIME: 28,    // Active duration in seconds before cycling
   JUMP_PAD_WARNING_TIME: 5, // Warning flicker phase in seconds before despawn
