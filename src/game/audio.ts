@@ -310,7 +310,7 @@ class SoundEngine {
     osc.stop(now + 0.45)
   }
 
-  playAbility() {
+  playPortal() {
     this.init()
     if (!this.ctx) return
     const now = this.ctx.currentTime

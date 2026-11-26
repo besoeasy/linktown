@@ -727,7 +727,7 @@ export class GameEngine {
     }
     this.portals.set(id, portal)
     this.scene.addPortal(portal)
-    sound.playAbility()
+    sound.playPortal()
     return portal
   }
 
@@ -768,7 +768,7 @@ export class GameEngine {
       this.localPlayer.y = dst.y
       this.localPlayer.z = dst.z
       this.portalCooldownUntil = now + 1500
-      sound.playAbility()
+      sound.playPortal()
       this.scene.portalWarpEffect(dst.x, dst.y, dst.z)
       if (this.mode === 'client') {
         this.client?.send({ type: 'portalWarp', x: dst.x, y: dst.y, z: dst.z })
