@@ -1041,17 +1041,9 @@ const reprintPercent = computed(() => {
   box-shadow: 0 0 6px currentColor;
 }
 
-.action-card.ready {
-  box-shadow: 0 0 12px rgba(0, 240, 255, 0.2);
-}
-
 .action-card.active {
   background: rgba(245, 158, 11, 0.18);
   box-shadow: 0 0 12px rgba(245, 158, 11, 0.25);
-}
-
-.action-card.cooldown {
-  opacity: 0.75;
 }
 
 .action-card.disabled {
