@@ -1,4 +1,4 @@
-import { CFG, type CoreId, CORE_IDS } from './config'
+import { CFG } from './config'
 import type { MapData } from './map'
 import { groundHeight } from './map'
 import type { PlayerState, NaniteCache, JumpPad } from '../net/types'
@@ -8,11 +8,9 @@ export function spawnBots(count: number, map: MapData): PlayerState[] {
   const bots: PlayerState[] = []
   for (let i = 0; i < count; i++) {
     const s = map.spawns[Math.floor(Math.random() * map.spawns.length)] || { x: (i - count / 2) * 10, y: 1.6, z: 20 }
-    const core = CORE_IDS[(i + 1) % CORE_IDS.length]
     bots.push({
       id: 1000 + i,
       name: `RX11-BOT-${i + 1}`,
-      character: core,
       x: s.x,
       y: s.y,
       z: s.z,
@@ -29,7 +27,6 @@ export function spawnBots(count: number, map: MapData): PlayerState[] {
       shieldEnd: 0,
       invisible: false,
       cloakEnd: 0,
-      lastAbilityAt: 0,
       lastDamageAt: Date.now(),
       isBot: true
     })

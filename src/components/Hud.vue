@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
-import { CFG, CORE_DETAILS, type CoreId } from '../game/config'
+import { CFG } from '../game/config'
 import { sound } from '../game/audio'
 import type { PlayerState, KillMsg, TelemetryData, ChatMsg } from '../net/types'
 
@@ -108,8 +108,6 @@ const visibleChat = computed(() => {
     })
 })
 
-const core = computed(() => CORE_DETAILS[props.player.character] || CORE_DETAILS.denja)
-
 const hullPercent = computed(() => {
   return Math.max(0, Math.min(100, (props.player.health / CFG.MAX_HEALTH) * 100))
 })
@@ -119,23 +117,6 @@ const formatTime = (seconds: number) => {
   const s = Math.floor(seconds % 60)
   return `${m}:${s.toString().padStart(2, '0')}`
 }
-
-// Q Ability Timer
-const qTimeRemaining = computed(() => {
-  if (props.player.superActive) return 0
-  if (core.value.cooldown <= 0) return 0
-  const elapsed = currentTime.value - (props.player.lastAbilityAt || 0)
-  return Math.max(0, (core.value.cooldown - elapsed) / 1000)
-})
-
-const qPercent = computed(() => {
-  if (props.player.superActive) return 0
-  if (core.value.cooldown <= 0) return 100
-  const elapsed = currentTime.value - (props.player.lastAbilityAt || 0)
-  return Math.min(100, Math.max(0, (elapsed / core.value.cooldown) * 100))
-})
-
-const abilityReady = computed(() => !props.player.superActive && qTimeRemaining.value <= 0)
 
 // Objective readout (leaderboard is the top-5 slice)
 const myId = computed(() => props.localPlayerId ?? props.player.id)
@@ -169,14 +150,6 @@ const radarThreat = computed(() => {
   if (d <= 60) return 'warm'
   return 'cold'
 })
-
-// Telepotu recall state: live anchor countdown drives the Q status line
-const anchorActive = computed(() =>
-  props.player.character === 'telepotu' && (props.player.anchorExpires || 0) > currentTime.value
-)
-const anchorSecs = computed(() =>
-  Math.max(0, ((props.player.anchorExpires || 0) - currentTime.value) / 1000)
-)
 
 // E Super Timer (duration = 10s)
 const eTimeRemaining = computed(() => {
@@ -341,9 +314,9 @@ const reprintPercent = computed(() => {
       </div>
 
       <div class="pilot-badge">
-        <span class="core-icon">{{ core.badge }}</span>
-        <span class="core-name">{{ core.name }}</span>
-        <span class="core-maker">{{ core.maker }}</span>
+        <span class="core-icon">⬡</span>
+        <span class="core-name">RX-11</span>
+        <span class="core-maker">SINGLE CHASSIS</span>
       </div>
     </div>
 
@@ -425,46 +398,6 @@ const reprintPercent = computed(() => {
 
       <!-- Action & Ability Indicators with Border Timer Lines -->
       <div class="actions-panel">
-        <!-- Q Ability -->
-        <div
-          class="action-card"
-          :class="{
-            ready: abilityReady,
-            cooldown: !abilityReady && !player.superActive,
-            disabled: player.superActive
-          }"
-        >
-          <svg class="card-border-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
-            <rect x="1" y="1" width="98" height="98" rx="5" class="svg-border-track" />
-            <rect
-              x="1" y="1" width="98" height="98" rx="5"
-              class="svg-border-line"
-              pathLength="100"
-              :style="{
-                strokeDasharray: '100',
-                strokeDashoffset: `${100 - qPercent}`,
-                stroke: player.superActive ? 'rgba(255, 255, 255, 0.15)' : abilityReady ? '#00f0ff' : '#0ea5e9'
-              }"
-            />
-          </svg>
-          <div class="card-inner">
-            <div class="key-bind" :class="{ 'key-disabled': player.superActive }">Q</div>
-            <div class="action-info">
-              <span class="action-name">{{ core.ability }}</span>
-              <span class="action-status">
-                {{ player.superActive ? 'DISABLED (SUPER)' : anchorActive ? `ANCHOR ${anchorSecs.toFixed(0)}s · Q = RECALL` : abilityReady ? 'READY' : `${qTimeRemaining.toFixed(1)}s` }}
-              </span>
-            </div>
-          </div>
-          <div
-            class="bottom-border-line"
-            :style="{
-              width: `${qPercent}%`,
-              backgroundColor: player.superActive ? 'transparent' : abilityReady ? '#00f0ff' : '#0ea5e9'
-            }"
-          ></div>
-        </div>
-
         <!-- E Super -->
         <div class="action-card" :class="{ active: player.superActive }">
           <svg class="card-border-svg" viewBox="0 0 100 100" preserveAspectRatio="none">

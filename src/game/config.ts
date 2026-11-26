@@ -45,8 +45,6 @@ export const CFG = {
   PORTAL_CHANCE: 0.5,       // Chance per roll (only when none active)
   PORTAL_LIFETIME: 10,      // Seconds a portal pair stays open
   PORTAL_RADIUS: 2.5,       // Step-in trigger radius at each mouth
-  ANCHOR_LIFETIME: 30000,   // Telepotu relay anchor lifetime (ms)
-  RECALL_COST: 15,          // Nanite mass spent to warp back to anchor
   JUMP_SPEED: 18,           // Base vertical jump velocity
   GRAVITY: 32,              // Gravity units/sec^2
   SUPER_JUMP_SPEED: 44,     // High jump velocity (~10x height)
@@ -65,81 +63,5 @@ export const CHASSIS = {
   shieldCost: CFG.SHIELD_COST,
 } as const
 
-export type CoreId =
-  | 'denja'
-  | 'mednix'
-  | 'tank'
-  | 'anchor'
-  | 'telepotu'
-
-export interface CoreInfo {
-  id: CoreId
-  name: string
-  maker: string
-  ability: string
-  cooldown: number // ms
-  color: string
-  badge: string
-  desc: string
-  lore: string
-}
-
-export const CORE_DETAILS: Record<CoreId, CoreInfo> = {
-  denja: {
-    id: 'denja',
-    name: 'Denja',
-    maker: 'Kuro Racer Syndicate',
-    ability: 'Overdrive',
-    cooldown: 30000,
-    color: '#f97316',
-    badge: '🔥',
-    desc: 'Overclocks chassis mobility to 2× speed for 8s.',
-    lore: 'Pit-racer governor removal burst; burns raw nanite conduits.'
-  },
-  mednix: {
-    id: 'mednix',
-    name: 'Mednix',
-    maker: 'Helix Med-Corps',
-    ability: 'Field Repair',
-    cooldown: 20000,
-    color: '#10b981',
-    badge: '💊',
-    desc: 'Recycles waste heat to restore 1–50 Hull immediately.',
-    lore: 'Rapid field fabrication protocol from frontline orbital trauma units.'
-  },
-  tank: {
-    id: 'tank',
-    name: 'Tank',
-    maker: 'Bastion Siege Foundry',
-    ability: 'Bulwark',
-    cooldown: 35000,
-    color: '#3b82f6',
-    badge: '🛡️',
-    desc: 'Reinforces nanite density: 50% damage reduction for 8s.',
-    lore: 'Siege barrier architecture capable of withstanding direct kinetic strikes.'
-  },
-  anchor: {
-    id: 'anchor',
-    name: 'Anchor',
-    maker: 'Orbital Guard',
-    ability: 'Aegis',
-    cooldown: 40000,
-    color: '#06b6d4',
-    badge: '⚓',
-    desc: 'Deploys a pre-charged cell for 3s of full immunity with 0 Hull cost.',
-    lore: 'Standard military guard cell designed for breaching hot drop zones.'
-  },
-  telepotu: {
-    id: 'telepotu',
-    name: 'Telepotu',
-    maker: 'Vela Relay Compact',
-    ability: 'Recall Relay',
-    cooldown: 30000,
-    color: '#f59e0b',
-    badge: '📡',
-    desc: 'Drops a relay anchor with Q. Press Q again within 30s to warp back for 15 Hull.',
-    lore: 'Vela breakaway-freight recall beacons, tuned for hot extractions.'
-  },
-}
-
-export const CORE_IDS: CoreId[] = Object.keys(CORE_DETAILS) as CoreId[]
+// Single RX-11 chassis - all pilots use the same loadout.
+export const PLAYER_COLOR = '#00f0ff'

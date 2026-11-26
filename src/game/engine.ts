@@ -1,4 +1,4 @@
-import { CFG, type CoreId, CORE_DETAILS } from './config'
+import { CFG } from './config'
 import { generateMap, groundHeight, type MapData } from './map'
 import { createBoxGrid, resolveCollision, raycastPlayers } from './physics'
 import { spawnBots, tickBots } from './bots'
@@ -123,28 +123,12 @@ export class GameEngine {
   private lastDryFire = 0
   private lastHitTime = Date.now()
   private inputDisposers: Array<() => void> = []
-  /** Pending setTimeout/setInterval handles for timed abilities so
-   *  destroy()/respawn can cancel them instead of leaking callbacks. */
-  private abilityTimers = new Set<ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>>()
   /** Last accepted shot timestamp per remote peer (host-side fire-rate limit). */
   private remoteShotAt = new Map<number, number>()
   /** Last accepted chat timestamp per remote peer (host-side spam gate). */
   private remoteChatAt = new Map<number, number>()
   private lastChatAt = 0
-  private trackTimer(t: ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>) {
-    this.abilityTimers.add(t)
-    return t
-  }
-
-  private clearAbilityTimers() {
-    for (const t of this.abilityTimers) {
-      clearTimeout(t as ReturnType<typeof setTimeout>)
-      clearInterval(t as ReturnType<typeof setInterval>)
-    }
-    this.abilityTimers.clear()
-  }
   private lastMoveTime = Date.now()
-  private lastAbilityUsedAt = 0
   private isMouseHeld = false
 
   public host: any = null
@@ -155,7 +139,6 @@ export class GameEngine {
     scene: SceneRenderer,
     seed: number,
     callsign: string,
-    character: CoreId,
     mode: GameMode,
     callbacks: GameCallbacks
   ) {
@@ -172,7 +155,6 @@ export class GameEngine {
     this.localPlayer = {
       id: 1,
       name: callsign || 'Anonymous',
-      character,
       x: spawn.x,
       y: spawn.y,
       z: spawn.z,
@@ -189,7 +171,6 @@ export class GameEngine {
       shieldEnd: 0,
       invisible: false,
       cloakEnd: 0,
-      lastAbilityAt: 0,
       lastDamageAt: Date.now()
     }
     this.players.set(1, this.localPlayer)
@@ -220,7 +201,7 @@ export class GameEngine {
     host.setSpawnProvider?.((id: number) => this.allocateSpawnForPeer(id))
     for (const [id] of host.peers) {
       if (!this.players.has(id)) {
-        this.addRemotePlayer(id, `Pilot-${id}`, 'denja')
+        this.addRemotePlayer(id, `Pilot-${id}`)
       }
     }
   }
@@ -229,14 +210,13 @@ export class GameEngine {
     this.client = client
     this.client.send({
       type: 'join',
-      name: this.localPlayer.name,
-      character: this.localPlayer.character
+      name: this.localPlayer.name
     })
   }
 
-  onPeerConnected(peerId: number, name?: string, character?: CoreId) {
+  onPeerConnected(peerId: number, name?: string) {
     if (!this.players.has(peerId)) {
-      this.addRemotePlayer(peerId, name || `Pilot-${peerId}`, character || 'denja')
+      this.addRemotePlayer(peerId, name || `Pilot-${peerId}`)
     }
   }
 
@@ -248,14 +228,12 @@ export class GameEngine {
     this.scene.updatePlayers([...this.players.values()], this.localPlayer.id)
   }
 
-  addRemotePlayer(id: number, name: string, character: CoreId, spawnOverride?: { x: number; y: number; z: number; yaw?: number }) {
+  addRemotePlayer(id: number, name: string, spawnOverride?: { x: number; y: number; z: number; yaw?: number }) {
     const spawn = spawnOverride || this.pendingSpawns.get(id) || this.getRandomSpawn()
     this.pendingSpawns.delete(id)
-    const safeCharacter: CoreId = CORE_DETAILS[character as CoreId] ? character : 'denja'
     const player: PlayerState = {
       id,
       name: name || `Pilot-${id}`,
-      character: safeCharacter,
       x: spawn.x,
       y: spawn.y,
       z: spawn.z,
@@ -272,7 +250,6 @@ export class GameEngine {
       shieldEnd: 0,
       invisible: false,
       cloakEnd: 0,
-      lastAbilityAt: 0,
       lastDamageAt: Date.now()
     }
     this.players.set(id, player)
@@ -335,8 +312,6 @@ export class GameEngine {
       this.keys[e.key.toLowerCase()] = true
       if (e.key.toLowerCase() === 'c') {
         this.toggleCrouch()
-      } else if (e.key.toLowerCase() === 'q') {
-        this.triggerClassAbility()
       } else if (e.key.toLowerCase() === 'e') {
         this.triggerSuper()
       } else if (e.key.toLowerCase() === 'r') {
@@ -464,124 +439,6 @@ export class GameEngine {
     }
   }
 
-  private triggerClassAbility() {
-    if (!this.localPlayer.alive || this.localPlayer.superActive || this.localPlayer.invisible) return
-    const now = Date.now()
-    // Recall Relay manages its own gate: drops are free, only recalls
-    // consume the 30s cooldown (see triggerTelepotu).
-    if (this.localPlayer.character === 'telepotu') {
-      this.triggerTelepotu(now)
-      return
-    }
-    const core = CORE_DETAILS[this.localPlayer.character]
-    if (core.cooldown > 0 && now - this.lastAbilityUsedAt < core.cooldown) return
-
-    this.lastAbilityUsedAt = now
-    this.localPlayer.lastAbilityAt = now
-    sound.playAbility()
-
-    if (this.mode === 'client') {
-      this.client?.send({ type: 'classAbility' })
-      return
-    }
-
-    // Host or Solo execution of class ability
-    this.applyAbility(this.localPlayer)
-  }
-
-  /**
-   * Telepotu Q routing. Drop (no live anchor) is free and instant so the
-   * escape tool is always at hand; recall (live anchor) pays 15 Hull and
-   * the 30s cooldown. Client predicts both locally because live-player
-   * positions never sync down; the host re-applies authoritatively.
-   */
-  private triggerTelepotu(now: number) {
-    if (!this.hasLiveAnchor(this.localPlayer, now)) {
-      sound.playAbility()
-      if (this.mode === 'client') {
-        this.applyTelepotu(this.localPlayer, now)
-        this.client?.send({ type: 'classAbility' })
-        return
-      }
-      this.applyAbility(this.localPlayer)
-      return
-    }
-    if (now - this.lastAbilityUsedAt < CORE_DETAILS.telepotu.cooldown) return
-    this.lastAbilityUsedAt = now
-    this.localPlayer.lastAbilityAt = now
-    sound.playAbility()
-    if (this.mode === 'client') {
-      this.applyTelepotu(this.localPlayer, now)
-      this.client?.send({ type: 'classAbility' })
-      return
-    }
-    this.applyAbility(this.localPlayer)
-  }
-
-  private hasLiveAnchor(p: PlayerState, now: number): boolean {
-    return (
-      p.anchorExpires != null && now < p.anchorExpires &&
-      p.anchorX != null && p.anchorY != null && p.anchorZ != null
-    )
-  }
-
-  private applyAbility(player: PlayerState) {
-    const now = Date.now()
-    switch (player.character) {
-      case 'telepotu':
-        this.applyTelepotu(player, now)
-        break
-      case 'denja':
-        // Overdrive: handled via speed multiplier in tick
-        break
-      case 'mednix':
-        player.health = Math.min(CFG.MAX_HEALTH, player.health + Math.floor(Math.random() * 50) + 1)
-        break
-      case 'tank':
-        // Bulwark: half damage for 8s
-        break
-      case 'anchor':
-        player.shieldActive = true
-        player.shieldEnd = now + 3000
-        break
-    }
-  }
-
-  private clearAnchor(player: PlayerState) {
-    player.anchorX = undefined
-    player.anchorY = undefined
-    player.anchorZ = undefined
-    player.anchorExpires = undefined
-  }
-
-  /**
-   * Telepotu Recall Relay (two-tap, self-only, deterministic).
-   * First press drops a visible anchor at the shell's feet (free).
-   * Second press warps back for RECALL_COST hull. Broke recalls fizzle
-   * and keep the anchor; attempted recalls consume the 30s cooldown.
-   */
-  private applyTelepotu(player: PlayerState, now: number): boolean {
-    if (!this.hasLiveAnchor(player, now)) {
-      player.anchorX = player.x
-      player.anchorY = player.y
-      player.anchorZ = player.z
-      player.anchorExpires = now + CFG.ANCHOR_LIFETIME
-      this.scene.portalWarpEffect(player.x, player.y, player.z)
-      return true
-    }
-    if (player.health >= CFG.RECALL_COST + 1) {
-      player.health -= CFG.RECALL_COST
-      this.markHullSpent(player, now)
-      player.x = player.anchorX!
-      player.y = player.anchorY!
-      player.z = player.anchorZ!
-      this.clearAnchor(player)
-      this.scene.portalWarpEffect(player.x, player.y, player.z)
-      return true
-    }
-    return false
-  }
-
   private shoot() {
     if (!this.localPlayer.alive || this.localPlayer.invisible) return
     const now = Date.now()
@@ -672,9 +529,6 @@ export class GameEngine {
       if (target.id === this.localPlayer.id) this.scene.flashFirstPersonShield()
       else this.scene.flashThirdPersonShield(target.id)
       return
-    }
-    if (target.character === 'tank' && Date.now() - target.lastAbilityAt < 8000) {
-      dmg *= 0.5
     }
 
     const now = Date.now()
@@ -1033,7 +887,6 @@ export class GameEngine {
           p.superEnd = 0
           p.shieldActive = false
           p.shieldEnd = 0
-          this.clearAnchor(p)
           this.scene.respawnBeam(s.x, s.y, s.z)
           if (p.id === this.localPlayer.id) {
             this.localPlayer.x = s.x
@@ -1066,7 +919,6 @@ export class GameEngine {
 
       if (p.superActive && now > p.superEnd) p.superActive = false
       if (p.shieldActive && now > p.shieldEnd) p.shieldActive = false
-      if (p.anchorExpires && now >= p.anchorExpires) this.clearAnchor(p)
       if (p.invisible && p.cloakEnd && now >= p.cloakEnd) {
         p.invisible = false
         p.cloakEnd = 0
@@ -1231,9 +1083,6 @@ export class GameEngine {
         speed *= 2.0
       }
       const rageNow = Date.now()
-      if (this.localPlayer.character === 'denja' && rageNow - this.localPlayer.lastAbilityAt < 8000) {
-        speed *= 2.0
-      }
       // Jump-pad air boost: extra steering speed while airborne after a launch
       if (rageNow < this.padBoostUntil && !this.isOnGround(this.localPlayer)) {
         speed *= CFG.JUMP_PAD_MOMENTUM_BOOST
@@ -1392,7 +1241,7 @@ export class GameEngine {
     // anything further stays hidden so the radar never gives away positions.
     // Crouched shells are off the radar: holding still behind cover to
     // rebuild Hull must not broadcast your presence.
-    let nearestPilot: { name: string; distance: number; character: CoreId } | undefined = undefined
+    let nearestPilot: { name: string; distance: number } | undefined = undefined
     let minD = 100
     for (const p of this.players.values()) {
       if (p.id !== this.localPlayer.id && p.alive && !p.invisible && !p.crouching) {
@@ -1401,8 +1250,7 @@ export class GameEngine {
           minD = d
           nearestPilot = {
             name: p.name,
-            distance: Math.round(d),
-            character: p.character
+            distance: Math.round(d)
           }
         }
       }
@@ -1545,7 +1393,7 @@ export class GameEngine {
       p.pitch = msg.pitch
       // Remote coordinates: client-authoritative but speed-clamped so a
       // tampered client cannot teleport across the map. Budget covers the
-      // fastest legit combo (sprint × super × denja) plus lag slack.
+      // fastest legit combo (sprint × super) plus lag slack.
       const dtBudget = Math.min(Math.max(typeof msg.dt === 'number' ? msg.dt : 0.05, 0), 1)
       const maxStep = CFG.RUN_SPEED * 2 * 2 * dtBudget + 2.5
       const maxDy = CFG.JUMP_PAD_LAUNCH_VY * dtBudget + 2.5
@@ -1579,10 +1427,6 @@ export class GameEngine {
         if (len > 0) {
           let speed = CFG.RUN_SPEED
           if (p.superActive) {
-            speed *= 2.0
-          }
-          const rn = Date.now()
-          if (p.character === 'denja' && rn - p.lastAbilityAt < 8000) {
             speed *= 2.0
           }
           mx = (mx / len) * speed * Math.min(Math.max(msg.dt || 0, 0), 0.25)
@@ -1661,18 +1505,15 @@ export class GameEngine {
       }
       this.client?.send({
         type: 'join',
-        name: this.localPlayer.name,
-        character: this.localPlayer.character
+        name: this.localPlayer.name
       })
       this.scene.updatePlayers([...this.players.values()], this.localPlayer.id)
     } else if (msg.type === 'join' && fromId) {
-      const safeCharacter: CoreId = CORE_DETAILS[msg.character as CoreId] ? msg.character : 'denja'
       const p = this.players.get(fromId)
       if (p) {
         p.name = msg.name
-        p.character = safeCharacter
       } else {
-        this.addRemotePlayer(fromId, msg.name, safeCharacter)
+        this.addRemotePlayer(fromId, msg.name)
       }
     } else if (msg.type === 'super' && fromId && this.players.has(fromId)) {
       const p = this.players.get(fromId)!
@@ -1696,22 +1537,6 @@ export class GameEngine {
         p.health -= CFG.SUPER_JUMP_COST
         p.lastDamageAt = Date.now()
       }
-    } else if (msg.type === 'classAbility' && fromId && this.players.has(fromId)) {
-      const p = this.players.get(fromId)!
-      if (p.alive && !p.superActive && !p.invisible) {
-        // Host-side cooldown mirrors the local gate so Q-packet spam
-        // cannot buy infinite heals/drains/immunities.
-        const now = Date.now()
-        // Relay drops are free (no anchor yet); only recalls are gated.
-        if (p.character === 'telepotu' && !this.hasLiveAnchor(p, now)) {
-          this.applyTelepotu(p, now)
-        } else {
-          const cooldown = CORE_DETAILS[p.character]?.cooldown ?? 0
-          if (cooldown > 0 && now - (p.lastAbilityAt || 0) < cooldown) return
-          p.lastAbilityAt = now
-          this.applyAbility(p)
-        }
-      }
     } else if (msg.type === 'crouch' && fromId && this.players.has(fromId)) {
       this.players.get(fromId)!.crouching = msg.state
     }
@@ -1720,7 +1545,6 @@ export class GameEngine {
   destroy() {
     this.isRunning = false
     this.teardownInput()
-    this.clearAbilityTimers()
     if (this.tickInterval) clearInterval(this.tickInterval)
     if (this.pingInterval) clearInterval(this.pingInterval)
     sound.stopFootsteps()

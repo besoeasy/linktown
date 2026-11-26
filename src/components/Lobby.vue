@@ -1,22 +1,17 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { CORE_DETAILS, CORE_IDS } from '../game/config'
 import type { PublicRoom } from '../net/directory'
 
 const props = defineProps<{
   callsign: string
-  selectedCore: CoreId
   rooms: PublicRoom[]
   dirOnline: boolean
   inviteRoomCode?: string
   isConnecting?: boolean
 }>()
 
-type CoreId = (typeof CORE_IDS)[number]
-
 const emit = defineEmits<{
   (e: 'update:callsign', val: string): void
-  (e: 'update:selectedCore', val: CoreId): void
   (e: 'startSolo'): void
   (e: 'createPeerRoom'): void
   (e: 'joinPeerRoom', code: string): void
@@ -27,7 +22,6 @@ const roomCodeInput = ref('')
 const copied = ref(false)
 let copyTimer: any = null
 
-const core = computed(() => CORE_DETAILS[props.selectedCore])
 const callsignValid = computed(() => props.callsign.trim().length >= 2)
 const joinCode = computed(() =>
   roomCodeInput.value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8)
@@ -59,7 +53,7 @@ const copyInvite = async () => {
 </script>
 
 <template>
-  <div class="lobby" :style="{ '--core': core.color }">
+  <div class="lobby">
     <div class="wrap">
       <header class="top">
         <div class="brand">
@@ -83,7 +77,7 @@ const copyInvite = async () => {
 
       <section class="hero">
         <h2>Drop into Linktown.</h2>
-        <p>10-minute trials. Hull is ammo. Only your Atma Core sets you apart.</p>
+        <p>10-minute trials. One chassis. Hull is ammo.</p>
       </section>
 
       <section class="block">
@@ -101,27 +95,6 @@ const copyInvite = async () => {
           />
           <button class="quiet" @click="randomizeCallsign">Random</button>
         </div>
-
-        <span class="label" style="margin-top: 20px">Atma Core</span>
-        <div class="cores" role="listbox" aria-label="Atma cores">
-          <button
-            v-for="cid in CORE_IDS"
-            :key="cid"
-            role="option"
-            :aria-selected="cid === selectedCore"
-            class="core"
-            :class="{ sel: cid === selectedCore }"
-            @click="emit('update:selectedCore', cid)"
-          >
-            <span class="core-b">{{ CORE_DETAILS[cid].badge }}</span>
-            <span class="core-n">{{ CORE_DETAILS[cid].name }}</span>
-            <span class="core-a">{{ CORE_DETAILS[cid].ability }}</span>
-          </button>
-        </div>
-        <p class="core-detail">
-          <strong>{{ core.name }}</strong> — {{ core.desc }}
-          <span class="muted">{{ core.maker }} · Q every {{ core.cooldown / 1000 }}s</span>
-        </p>
       </section>
 
       <section class="block play">
@@ -168,7 +141,7 @@ const copyInvite = async () => {
 
       <details class="manual">
         <summary>Controls &amp; rules</summary>
-        <p><kbd>WASD</kbd> move · <kbd>Mouse</kbd> aim · <kbd>Click</kbd> fire · <kbd>Q</kbd> core · <kbd>E</kbd> super · <kbd>R</kbd> shield · <kbd>Space</kbd> jump · <kbd>C</kbd> crouch · <kbd>Tab</kbd> scoreboard</p>
+        <p><kbd>WASD</kbd> move · <kbd>Mouse</kbd> aim · <kbd>Click</kbd> fire · <kbd>E</kbd> super · <kbd>R</kbd> shield · <kbd>Space</kbd> jump · <kbd>C</kbd> crouch · <kbd>Tab</kbd> scoreboard</p>
         <p class="muted">Shots, jumps and abilities spend hull. After 3s of calm, hull rebuilds — 3× faster while crouched.</p>
       </details>
 
@@ -181,7 +154,7 @@ const copyInvite = async () => {
 
 <style scoped>
 .lobby {
-  --core: #f97316;
+  --accent: #00f0ff;
   position: absolute; inset: 0; z-index: 20; overflow-y: auto;
   background: #0b0d12; color: #e8ebf1;
   font-family: 'Chakra Petch', 'Rajdhani', sans-serif;
@@ -213,23 +186,14 @@ input {
   flex: 1; background: #11151d; border: 1px solid #2a3040; border-radius: 6px;
   color: #fff; font-family: inherit; font-size: 15px; padding: 10px 12px; outline: none; min-width: 0;
 }
-input:focus { border-color: var(--core); }
+input:focus { border-color: var(--accent); }
 .join input { text-transform: uppercase; letter-spacing: 2px; text-align: center; font-family: 'JetBrains Mono', monospace; font-size: 14px; }
 
-.cores { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
-.core { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; background: #11151d; border: 1px solid #232835; border-radius: 8px; padding: 10px; cursor: pointer; color: #e8ebf1; font-family: inherit; text-align: left; }
-.core:hover { border-color: #4a5266; }
-.core.sel { border-color: var(--core); }
-.core-b { font-size: 20px; }
-.core-n { font-weight: 700; font-size: 13px; }
-.core-a { font-size: 11px; color: #8a90a0; }
-.core-detail { margin: 2px 0 0; font-size: 13px; color: #c6ccd8; }
 .muted { color: #8a90a0; font-size: 13px; }
-.core-detail .muted { display: block; margin-top: 2px; font-size: 12px; }
 
 .play .hint { margin: 0; font-size: 12px; color: #8a90a0; }
 
-.primary { background: var(--core); border: 1px solid var(--core); color: #0b0d12; font-weight: 800; border-radius: 8px; padding: 10px 18px; cursor: pointer; font-family: inherit; font-size: 14px; }
+.primary { background: var(--accent); border: 1px solid var(--accent); color: #0b0d12; font-weight: 800; border-radius: 8px; padding: 10px 18px; cursor: pointer; font-family: inherit; font-size: 14px; }
 .primary:hover:not(:disabled) { filter: brightness(1.08); }
 .primary:disabled { opacity: .35; cursor: not-allowed; }
 .primary.big { width: 100%; font-size: 17px; padding: 14px; }
@@ -257,10 +221,9 @@ kbd { background: #1c212c; border: 1px solid #2a3040; border-radius: 4px; paddin
 .foot a { color: #8a90a0; font-size: 12px; text-decoration: none; }
 .foot a:hover { color: #fff; }
 
-button:focus-visible, input:focus-visible, summary:focus-visible, a:focus-visible { outline: 2px solid var(--core); outline-offset: 2px; }
+button:focus-visible, input:focus-visible, summary:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 @media (max-width: 560px) {
-  .cores { grid-template-columns: repeat(2, 1fr); }
   .row.split { flex-direction: column; }
   .hero h2 { font-size: 26px; }
 }

@@ -1,7 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue'
-import type { CoreId } from './game/config'
-import { CORE_IDS } from './game/config'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { STATIC_MAP_SEED } from './game/map'
 import { SceneRenderer } from './game/scene'
 import { GameEngine } from './game/engine'
@@ -22,11 +20,6 @@ import { LanSignaler } from './net/lan'
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 const inLobby = ref(true)
 const callsign = ref(localStorage.getItem('ltown_callsign') || 'Pilot-' + Math.floor(100 + Math.random() * 900))
-const storedCore = localStorage.getItem('ltown_core')
-const selectedCore = ref<CoreId>(
-  storedCore && (CORE_IDS as string[]).includes(storedCore) ? (storedCore as CoreId) : 'denja'
-)
-watch(selectedCore, (v) => localStorage.setItem('ltown_core', v))
 
 // Unified PeerJS Room State
 const currentRoomCode = ref('')
@@ -72,7 +65,6 @@ const announceHostedRoom = () => {
   directory.publish({
     code: currentRoomCode.value,
     name: `${callsign.value}'s trial`,
-    core: selectedCore.value,
     players: (peerHost?.peers.size ?? 0) + 1
   })
 }
@@ -142,14 +134,12 @@ onMounted(() => {
         p2pStatus: p2pStatus.value,
         roomCode: currentRoomCode.value,
         callsign: callsign.value,
-        selectedCore: selectedCore.value,
         seed: engine?.map?.seed,
         matchTime: matchTime.value,
         playersCount: engine?.players?.size || 0,
         players: engine ? [...engine.players.values()].map(p => ({
           id: p.id,
           name: p.name,
-          character: p.character,
           x: Math.round(p.x * 100) / 100,
           y: Math.round(p.y * 100) / 100,
           z: Math.round(p.z * 100) / 100,
@@ -164,7 +154,6 @@ onMounted(() => {
         localPlayer: engine ? {
           id: engine.localPlayer.id,
           name: engine.localPlayer.name,
-          character: engine.localPlayer.character,
           x: Math.round(engine.localPlayer.x * 100) / 100,
           y: Math.round(engine.localPlayer.y * 100) / 100,
           z: Math.round(engine.localPlayer.z * 100) / 100,
@@ -174,7 +163,6 @@ onMounted(() => {
         remotePlayers: engine ? [...engine.players.values()].filter(p => p.id !== engine?.localPlayer?.id).map(p => ({
           id: p.id,
           name: p.name,
-          character: p.character,
           x: Math.round(p.x * 100) / 100,
           y: Math.round(p.y * 100) / 100,
           z: Math.round(p.z * 100) / 100,
@@ -225,7 +213,6 @@ const initEngine = async (seed: number, mode: 'solo' | 'host' | 'client') => {
   currentMatchMode = mode
   p2pStatus.value = ''
   localStorage.setItem('ltown_callsign', callsign.value)
-  localStorage.setItem('ltown_core', selectedCore.value)
   isGameOver.value = false
   matchResults.value = null
 
@@ -237,7 +224,6 @@ const initEngine = async (seed: number, mode: 'solo' | 'host' | 'client') => {
     sceneRenderer,
     seed,
     callsign.value,
-    selectedCore.value,
     mode,
     {
       onHudUpdate: (p, time, hvt, telem) => {
@@ -428,8 +414,7 @@ const hostLan = async () => {
     ws.send(JSON.stringify({
       type: 'register_host',
       seed,
-      name: callsign.value,
-      core: selectedCore.value
+      name: callsign.value
     }))
 
     ws.onmessage = async (e) => {
@@ -576,7 +561,6 @@ const handleSignalSubmit = (val: string) => {
     <Lobby
       v-if="inLobby"
       v-model:callsign="callsign"
-      v-model:selectedCore="selectedCore"
       :rooms="publicRooms"
       :dir-online="dirOnline"
       :invite-room-code="inviteRoomCode"

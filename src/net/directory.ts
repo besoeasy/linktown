@@ -1,5 +1,4 @@
 import mqtt, { type MqttClient } from 'mqtt'
-import type { CoreId } from '../game/config'
 
 // Public-room presence over a public MQTT broker (PeerJS itself has no
 // rooms/presence/listing — it only brokers signaling). Hosts heartbeat a
@@ -9,7 +8,6 @@ import type { CoreId } from '../game/config'
 export interface PublicRoom {
   code: string
   name: string
-  core: CoreId
   players: number
   maxPlayers: number
   updatedAt: number
@@ -30,12 +28,9 @@ function sanitize(raw: any): PublicRoom | null {
   const code = typeof raw.code === 'string' ? raw.code.trim().toUpperCase() : ''
   if (!/^[0-9A-Z]{4}$/.test(code)) return null
   const players = Math.max(1, Math.min(16, Math.floor(Number(raw.players) || 1)))
-  const allowedCores = ['denja', 'mednix', 'tank', 'anchor'] as const
-  const core = allowedCores.includes(raw.core as any) ? (raw.core as PublicRoom['core']) : 'denja'
   return {
     code,
     name: typeof raw.name === 'string' ? raw.name.slice(0, 40) : `${code} trial`,
-    core,
     players,
     maxPlayers: 16,
     updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : Date.now()
@@ -130,7 +125,6 @@ export class RoomDirectory {
     const listing: PublicRoom = {
       code: room.code.trim().toUpperCase(),
       name: room.name,
-      core: room.core,
       players: Math.max(1, Math.min(16, Math.floor(room.players))),
       maxPlayers: 16,
       updatedAt: Date.now()

@@ -1,9 +1,6 @@
-import type { CoreId } from '../game/config'
-
 export interface PlayerState {
   id: number
   name: string
-  character: CoreId
   x: number
   y: number
   z: number
@@ -20,13 +17,7 @@ export interface PlayerState {
   shieldEnd: number
   invisible: boolean
   cloakEnd?: number
-  lastAbilityAt: number
   lastDamageAt?: number
-  /** Telepotu recall anchor: drop point + expiry. Synced via gameState. */
-  anchorX?: number
-  anchorY?: number
-  anchorZ?: number
-  anchorExpires?: number
   isBot?: boolean
   ping?: number
 }
@@ -105,10 +96,6 @@ export interface ShootMsg {
 export interface ChargedShootMsg {
   type: 'chargedShoot'
   count: number
-}
-
-export interface AbilityMsg {
-  type: 'classAbility'
 }
 
 export interface SuperMsg {
@@ -203,7 +190,6 @@ export interface WelcomeMsg {
 export interface JoinMsg {
   type: 'join'
   name: string
-  character: CoreId
 }
 
 export interface PingMsg {
@@ -242,7 +228,6 @@ export type NetMessage =
   | InputMsg
   | ShootMsg
   | ChargedShootMsg
-  | AbilityMsg
   | SuperMsg
   | ShieldMsg
   | JumpMsg
@@ -273,7 +258,6 @@ export interface TelemetryData {
   nearestPilot?: {
     name: string
     distance: number
-    character: CoreId
   }
 }
 
