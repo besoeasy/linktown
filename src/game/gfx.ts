@@ -19,9 +19,10 @@
  */
 
 import * as THREE from 'three/webgpu'
-import { float, mix, mrt, normalView, output, pass } from 'three/tsl'
+import { dot, float, mix, mrt, normalView, output, pass, renderOutput, screenUV, smoothstep, uniform, vec3, vec4 } from 'three/tsl'
 import { bloom } from 'three/addons/tsl/display/BloomNode.js'
 import { ao } from 'three/addons/tsl/display/GTAONode.js'
+import { fxaa } from 'three/addons/tsl/display/FXAANode.js'
 
 export type GfxQuality = 'low' | 'medium' | 'high'
 export type BackendKind = 'webgpu' | 'webgl2'
@@ -41,7 +42,7 @@ export interface GfxPreset {
 
 export const GFX_PRESETS: Record<GfxQuality, GfxPreset> = {
   low: { maxPixelRatio: 1, msaa: 0, shadowMap: 1024, gtao: false, bloom: false },
-  medium: { maxPixelRatio: 1, msaa: 4, shadowMap: 2048, gtao: false, bloom: true },
+  medium: { maxPixelRatio: 1, msaa: 4, shadowMap: 2048, gtao: true, bloom: true },
   high: { maxPixelRatio: 1.5, msaa: 4, shadowMap: 2048, gtao: true, bloom: true }
 }
 
@@ -171,9 +172,9 @@ export async function createGfx(
   renderer.outputColorSpace = THREE.SRGBColorSpace
 
   // ---- Post stack -----------------------------------------------------
-  // scene pass -> [GTAO] -> [bloom] -> tonemap/sRGB output. The pass RT is
-  // HDR (half float) and multisampled per preset; `outputColorTransform`
-  // applies the renderer's tone mapping + color space on the final blit.
+  // scene pass -> [GTAO] -> [bloom] -> grade/vignette -> tonemap/sRGB -> FXAA.
+  // The pass RT is HDR (half float) and multisampled per preset. We disable
+  // PostProcessing's automatic output transform so FXAA can run after sRGB.
   const post = new THREE.PostProcessing(renderer)
   const scenePass = pass(scene, camera, { samples: preset.msaa })
   if (preset.gtao) {
@@ -184,15 +185,16 @@ export async function createGfx(
 
   if (preset.gtao) {
     const aoNode: any = ao(scenePass.getTextureNode('depth'), scenePass.getTextureNode('normal'), camera)
-    aoNode.radius.value = 0.72
+    const isHigh = quality === 'high'
+    aoNode.radius.value = isHigh ? 0.72 : 0.62
     aoNode.thickness.value = 1
     aoNode.distanceExponent.value = 1
-    aoNode.samples.value = 8
+    aoNode.samples.value = isHigh ? 8 : 4
     // Half-resolution AO: the documented sweet spot, ~4x cheaper than full.
     aoNode.resolutionScale = 0.5
     // Match the old GTAOPass blend intensity of 0.72:
     // color * (0.28 + 0.72 * ao)
-    const aoMix: any = mix(float(1), aoNode.getTextureNode().r, float(0.72))
+    const aoMix: any = mix(float(1), aoNode.getTextureNode().r, float(isHigh ? 0.72 : 0.58))
     outputNode = sceneColor.mul(aoMix)
   }
 
@@ -201,7 +203,27 @@ export async function createGfx(
     outputNode = outputNode.add(bloomNode)
   }
 
-  post.outputNode = outputNode
+  // Subtle cinematic grade: slight contrast/saturation lift, stronger when
+  // adaptive resolution is downscaling to recover perceived sharpness.
+  {
+    const graded: any = outputNode
+    const luma: any = dot(graded.rgb, vec3(0.2126, 0.7152, 0.0722))
+    const sat = float(1.08)
+    let rgb: any = mix(vec3(luma), graded.rgb, sat)
+    const contrast: any = float(1.03).add(sharpenUniform)
+    rgb = rgb.sub(0.5).mul(contrast).add(0.5)
+    const uvCoord: any = screenUV
+    const d: any = uvCoord.sub(0.5).length()
+    const vig: any = float(1).sub(smoothstep(0.2, 0.82, d).mul(0.18))
+    outputNode = vec4(rgb.mul(vig), graded.a)
+  }
+
+  // Manual output transform so we can append post-AA after sRGB conversion.
+  post.outputColorTransform = false
+  let finalNode: any = renderOutput(outputNode)
+  // FXAA cleans up shader aliasing and helps when adaptive resolution is downscaling.
+  finalNode = fxaa(finalNode)
+  post.outputNode = finalNode
   post.needsUpdate = true
 
   // ---- Sizing + adaptive render scale ---------------------------------
@@ -209,9 +231,12 @@ export async function createGfx(
   let width = window.innerWidth
   let height = window.innerHeight
   let pixelRatio = Math.min(window.devicePixelRatio, preset.maxPixelRatio)
+  // Extra contrast/sharpening when adaptive resolution is downscaling.
+  const sharpenUniform = uniform(0)
 
   const applySize = () => {
     pixelRatio = Math.min(window.devicePixelRatio, preset.maxPixelRatio) * scale
+    sharpenUniform.value = scale < 1 ? (1 - scale) * 0.22 : 0
     renderer.setPixelRatio(pixelRatio)
     renderer.setSize(width, height)
   }
